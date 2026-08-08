@@ -1,4 +1,4 @@
-# GhostPin v2.0
+# GhostPin v3.0
 
 **The Unshackled Beast - Location Intelligence Framework**
 
