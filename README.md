@@ -10,7 +10,7 @@
 
 ## Overview
 
-GhostPin v2.0 is the ultimate location intelligence framework. With just one disguised link, it can pinpoint a victim's exact location silently, without any notification or warning. VPN and proxies cannot prevent it.
+GhostPin v3.0 is the ultimate location intelligence framework. With just one disguised link, it can pinpoint a victim's exact location silently, without any notification or warning. VPN and proxies cannot prevent it.
 
 ### Author
 **F1REW0LF** - Red Team Operator
