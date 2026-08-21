@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-12.0.0-red.svg)](https://github.com/Hpperr/ghostpin)
+[![Version](https://img.shields.io/badge/version-13.0.0-red.svg)](https://github.com/Hpperr/ghostpin)
 
 ---
 
